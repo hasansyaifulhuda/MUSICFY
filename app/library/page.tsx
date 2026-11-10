@@ -13,6 +13,7 @@ import {
   Trash2,
   Play,
   Download,
+  DownloadCloud,
   TrendingUp,
   Clock,
   Check,
@@ -23,8 +24,18 @@ import Image from 'next/image';
 import { toast } from '@/lib/toast';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { HeaderUtilityBar } from '@/components/HeaderUtilityBar';
-import { AudioPresetDrawer } from '@/components/AudioPresetDrawer';
 import { cn } from '@/lib/utils';
+import dynamic from 'next/dynamic';
+
+const AudioPresetDrawer = dynamic(
+  () => import('@/components/AudioPresetDrawer').then((m) => m.AudioPresetDrawer),
+  { ssr: false, loading: () => null }
+);
+
+const ImportPlaylistModal = dynamic(
+  () => import('@/components/ImportPlaylistModal').then((m) => m.ImportPlaylistModal),
+  { ssr: false, loading: () => null }
+);
 
 function LibraryContent() {
   const router = useRouter();
@@ -33,15 +44,26 @@ function LibraryContent() {
   const isOnline = useOnlineStatus();
   const initialOfflineTabCheckedRef = useRef(false);
 
-  const [likedSongs, setLikedSongs] = useState<Track[]>([]);
-  const [playlists, setPlaylists] = useState<any[]>([]);
-  const [savedAlbums, setSavedAlbums] = useState<SavedAlbum[]>([]);
-  const [subscribedArtists, setSubscribedArtists] = useState<SubscribedArtist[]>([]);
-  const [offlineTracks, setOfflineTracks] = useState<OfflineTrack[]>([]);
+  const [likedSongs, setLikedSongs] = useState<Track[]>(() =>
+    typeof window !== 'undefined' ? db.getCachedLikedSongs() : []
+  );
+  const [playlists, setPlaylists] = useState<any[]>(() =>
+    typeof window !== 'undefined' ? db.getCachedPlaylists() : []
+  );
+  const [savedAlbums, setSavedAlbums] = useState<SavedAlbum[]>(() =>
+    typeof window !== 'undefined' ? db.getCachedSavedAlbums() : []
+  );
+  const [subscribedArtists, setSubscribedArtists] = useState<SubscribedArtist[]>(() =>
+    typeof window !== 'undefined' ? db.getCachedSubscribedArtists() : []
+  );
+  const [offlineTracks, setOfflineTracks] = useState<OfflineTrack[]>(() =>
+    typeof window !== 'undefined' ? db.getCachedOfflineTracks() : []
+  );
   const [activeTab, setActiveTab] = useState<string>('Semua');
   const [likedSearchQuery, setLikedSearchQuery] = useState('');
   const [selectedMood, setSelectedMood] = useState<string>('Semua');
   const [showCreate, setShowCreate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [newPlaylistImg, setNewPlaylistImg] = useState('');
   const playTrack = usePlayerStore((state) => state.playTrack);
@@ -186,10 +208,8 @@ function LibraryContent() {
 
   return (
     <main className="min-h-screen pt-4 px-4 md:px-8 pb-32 max-w-6xl mx-auto select-none space-y-4">
-      {/* Poin 85: Header Utility Bar (Storage & Offline Meter) */}
       <HeaderUtilityBar />
 
-      {/* Poin 82: Audio Preset Quick Selector Drawer */}
       <AudioPresetDrawer />
 
       {/* Header View */}
@@ -200,17 +220,34 @@ function LibraryContent() {
             Semua musik favorit, playlist, unduhan, dan riwayat Anda di satu tempat.
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors cursor-pointer"
-          title="Buat Playlist Baru"
-        >
-          <Plus className="w-5 h-5 stroke-[2.5]" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onPointerDown={(e) => {
+              if (e.button === 0) setShowImport(true);
+            }}
+            onClick={() => setShowImport(true)}
+            style={{ touchAction: 'manipulation' }}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white/10 hover:bg-white/20 text-xs font-semibold text-white transition-colors cursor-pointer border border-white/10"
+            title="Impor Playlist YouTube"
+          >
+            <DownloadCloud className="w-4 h-4 text-red-400 shrink-0" />
+            <span className="hidden sm:inline">Impor YouTube</span>
+          </button>
+          <button
+            onPointerDown={(e) => {
+              if (e.button === 0) setShowCreate(true);
+            }}
+            onClick={() => setShowCreate(true)}
+            style={{ touchAction: 'manipulation' }}
+            className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors cursor-pointer border border-white/10"
+            title="Buat Playlist Baru"
+          >
+            <Plus className="w-5 h-5 stroke-[2.5]" />
+          </button>
+        </div>
       </div>
 
-      {/* Poin 81: Smart Tabbed Manager */}
-      <div className="flex overflow-x-auto no-scrollbar gap-2 snap-x snap-mandatory pt-1">
+      <div className="flex overflow-x-auto no-scrollbar gap-2 snap-x snap-mandatory pt-1 pb-1">
         {tabs.map((tab) => {
           const isActive = activeTab === tab;
           let count = '';
@@ -222,16 +259,21 @@ function LibraryContent() {
           return (
             <button
               key={tab}
-              onClick={() => {
-                setActiveTab(tab);
-                if (tab === 'Lagu Disukai') {
-                  setLikedSearchQuery('');
+              onPointerDown={(e) => {
+                if (e.button === 0) {
+                  setActiveTab(tab);
+                  if (tab === 'Lagu Disukai') setLikedSearchQuery('');
                 }
               }}
-              className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs md:text-sm font-bold transition-all select-none snap-start cursor-pointer ${
+              onClick={() => {
+                setActiveTab(tab);
+                if (tab === 'Lagu Disukai') setLikedSearchQuery('');
+              }}
+              style={{ touchAction: 'manipulation' }}
+              className={`whitespace-nowrap px-3.5 sm:px-4 py-1.5 rounded-full text-xs sm:text-sm font-bold transition-all select-none snap-start cursor-pointer shrink-0 ${
                 isActive
                   ? 'bg-white text-black shadow-md'
-                  : 'bg-[#242424] hover:bg-[#2a2a2a] text-white'
+                  : 'bg-white/10 hover:bg-white/15 text-white/80 hover:text-white border border-white/5'
               }`}
             >
               {tab}{count}
@@ -240,7 +282,6 @@ function LibraryContent() {
         })}
       </div>
 
-      {/* Poin 83: Instant Filter Pills (Genre/Mood) */}
       <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-2">
         <span className="text-[11px] font-semibold text-white/40 uppercase tracking-wider shrink-0 mr-1">Filter:</span>
         {moodFilters.map((mood) => {
@@ -248,7 +289,11 @@ function LibraryContent() {
           return (
             <button
               key={mood}
+              onPointerDown={(e) => {
+                if (e.button === 0) setSelectedMood(mood);
+              }}
               onClick={() => setSelectedMood(mood)}
+              style={{ touchAction: 'manipulation' }}
               className={cn(
                 'px-2.5 py-1 rounded-lg text-xs font-medium transition-all shrink-0 cursor-pointer',
                 isSelected
@@ -263,7 +308,7 @@ function LibraryContent() {
       </div>
 
       {/* ========================================================================= */}
-      {/* 1. ALL / PLAYLISTS TAB (Featuring PMUSIC Desktop Modern Liked Songs Card) */}
+      {/* 1. ALL / PLAYLISTS TAB (Featuring MusicFY Desktop Modern Liked Songs Card) */}
       {/* ========================================================================= */}
       {(activeTab === 'Semua' || activeTab === 'Daftar putar') && (
         <div className="space-y-6">
@@ -315,11 +360,11 @@ function LibraryContent() {
             </div>
           </div>
 
-          {/* Grid Layout: PMUSIC Desktop Modern Liked Songs Card + Playlists */}
+          {/* Grid Layout: MusicFY Desktop Modern Liked Songs Card + Playlists */}
           <div>
             <h2 className="text-base font-bold text-white mb-3 px-1">Daftar Putar & Koleksi</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {/* Desktop PMUSIC Modern Liked Songs Hero Card */}
+              {/* Desktop MusicFY Modern Liked Songs Hero Card */}
               <div
                 onClick={() => setActiveTab('Lagu Disukai')}
                 className="relative col-span-1 sm:col-span-2 md:col-span-2 p-6 rounded-2xl cursor-pointer group select-none transition-all duration-300 overflow-hidden bg-gradient-to-br from-[#450af5] via-[#5922e8] to-[#8e8ee5] hover:shadow-2xl hover:shadow-[#450af5]/30 border border-white/10 flex flex-col justify-between min-h-[190px] md:min-h-[220px]"
@@ -419,11 +464,10 @@ function LibraryContent() {
       )}
 
       {/* ========================================================================= */}
-      {/* 2. DEDICATED LIKED SONGS VIEW (PMUSIC Desktop Modern Banner & Track List) */}
+      {/* 2. DEDICATED LIKED SONGS VIEW (MusicFY Desktop Modern Banner & Track List) */}
       {/* ========================================================================= */}
       {activeTab === 'Lagu Disukai' && (
         <div className="space-y-6">
-          {/* PMUSIC Desktop Header Banner */}
           <div className="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#5038a0]/80 via-[#22184c]/50 to-[#181818]/80 p-6 md:p-8 border border-white/5 shadow-2xl flex flex-col md:flex-row items-start md:items-end gap-6">
             {/* Cover Art Box */}
             <div className="w-32 h-32 md:w-44 md:h-44 rounded-xl shadow-2xl bg-gradient-to-br from-[#450af5] to-[#8e8ee5] flex items-center justify-center shrink-0 border border-white/10 group">
@@ -529,21 +573,24 @@ function LibraryContent() {
       {/* ========================================================================= */}
       {activeTab === 'Diunduh' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between mb-2">
-            <div>
-              <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                <span>Lagu Diunduh (Offline)</span>
-                <Check className="w-5 h-5 text-[#1DB954]" />
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-lg sm:text-xl font-bold text-white flex items-center gap-2 truncate">
+                <span className="truncate">Lagu Diunduh (Offline)</span>
+                <Check className="w-4 h-4 sm:w-5 sm:h-5 text-[#1DB954] shrink-0" />
               </h2>
-              <p className="text-xs text-[#b3b3b3]">Dapat diputar tanpa koneksi internet</p>
+              <p className="text-xs text-[#b3b3b3] truncate mt-0.5">
+                Dapat diputar tanpa koneksi internet ({offlineTracks.length} lagu)
+              </p>
             </div>
             {offlineTracks.length > 0 && (
               <button
                 onClick={() => playTrack(offlineTracks[0].track, offlineTracks.map((o) => o.track), 'playlist')}
-                className="w-12 h-12 bg-[#1DB954] hover:bg-[#1ed760] text-black rounded-full flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-xl cursor-pointer"
+                className="w-11 h-11 sm:w-12 sm:h-12 bg-[#1DB954] hover:bg-[#1ed760] text-black rounded-full flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-xl cursor-pointer shrink-0"
+                style={{ touchAction: 'manipulation' }}
                 title="Putar Offline"
               >
-                <Play className="w-6 h-6 fill-current ml-0.5" />
+                <Play className="w-5 h-5 sm:w-6 sm:h-6 fill-current ml-0.5" />
               </button>
             )}
           </div>
@@ -648,9 +695,7 @@ function LibraryContent() {
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* 5. HISTORY TAB (Smart Library Manager - Poin 81)                           */}
-      {/* ========================================================================= */}
+      {/* History Tab */}
       {activeTab === 'Riwayat' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between pb-2 border-b border-white/10">
@@ -742,6 +787,13 @@ function LibraryContent() {
           </div>
         </div>
       )}
+
+      {/* IMPORT YOUTUBE PLAYLIST MODAL */}
+      <ImportPlaylistModal
+        isOpen={showImport}
+        onClose={() => setShowImport(false)}
+        onSuccess={loadLibrary}
+      />
     </main>
   );
 }

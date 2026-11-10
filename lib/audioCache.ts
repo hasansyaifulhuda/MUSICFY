@@ -4,6 +4,9 @@ import { Readable } from 'stream';
 import { spawn } from 'child_process';
 import { cookieRotator } from '@/lib/cookieRotator';
 import { getRandomStealthUserAgent, sanitizeVideoId } from '@/lib/audioResolver';
+import { getYtDlpHeaderArgs } from '@/lib/stealthHeaders';
+import { downloadQueue, QueuePriority } from '@/lib/requestQueue';
+import { retryWithBackoff, isRetryableError } from '@/lib/retry';
 
 export interface AudioCacheStats {
   totalFiles: number;
@@ -128,6 +131,9 @@ class AudioCacheManager {
     headers.set('X-Cache', 'HIT');
     headers.set('X-Audio-Source', 'vps-disk');
     headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
+    headers.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
 
     if (options?.asAttachment) {
       const rawName = options.filename || `${videoId}.mp3`;
@@ -177,7 +183,7 @@ class AudioCacheManager {
 
   /**
    * Downloads and converts audio to MP3 using yt-dlp with multi-cookie rotation.
-   * Uses SingleFlight pattern to prevent duplicate concurrent downloads of the same track.
+   * Uses SingleFlight pattern and RequestQueue to prevent duplicate concurrent downloads of the same track.
    */
   public async ensureAudioCached(videoId: string): Promise<string> {
     const targetFilePath = this.getCacheFilePath(videoId);
@@ -188,19 +194,20 @@ class AudioCacheManager {
       return existing.filePath;
     }
 
-    // SingleFlight: If download is already in progress for this videoId, wait for it
-    const activePromise = this.inFlightDownloads.get(videoId);
-    if (activePromise) {
-      return activePromise;
-    }
+    return downloadQueue.enqueue(
+      `download:${videoId}`,
+      () => {
+        // Double-check disk cache inside queue turn
+        const recheck = this.getCachedAudio(videoId);
+        if (recheck) return Promise.resolve(recheck.filePath);
 
-    const downloadPromise = this.executeDownloadAndCache(videoId, targetFilePath)
-      .finally(() => {
-        this.inFlightDownloads.delete(videoId);
-      });
-
-    this.inFlightDownloads.set(videoId, downloadPromise);
-    return downloadPromise;
+        return this.executeDownloadAndCache(videoId, targetFilePath);
+      },
+      {
+        priority: QueuePriority.DOWNLOAD,
+        timeoutMs: this.downloadTimeoutMs > 0 ? this.downloadTimeoutMs + 30000 : 180000,
+      }
+    );
   }
 
   private async executeDownloadAndCache(videoId: string, targetFilePath: string): Promise<string> {
@@ -213,9 +220,9 @@ class AudioCacheManager {
     const ytDlpBin = this.findYtDlpBinary();
     const extendedEnv = this.getExtendedEnv();
 
-    // 1. Get rotated cookie file
-    const cookiePath = cookieRotator.getNextCookiePath();
-    const stealthUserAgent = getRandomStealthUserAgent();
+    // 1. Get rotated / multi-cookie candidate list
+    const candidateCookiePaths = cookieRotator.getHealthyCookiePaths();
+    const stealthHeaders = getYtDlpHeaderArgs();
 
     const baseArgs = [
       '--no-warnings',
@@ -224,13 +231,10 @@ class AudioCacheManager {
       '--socket-timeout',
       '60',
       '--retries',
-      '3',
+      '2',
       '--fragment-retries',
-      '3',
-      '--user-agent',
-      stealthUserAgent,
-      '--add-header',
-      'Accept-Language:en-US,en;q=0.9,id;q=0.8',
+      '2',
+      ...stealthHeaders,
       '--remote-components',
       'ejs:github',
       '--extract-audio',
@@ -246,48 +250,58 @@ class AudioCacheManager {
     let downloadedMp3Path: string | null = null;
     const timeoutDesc = this.downloadTimeoutMs > 0 ? `${this.downloadTimeoutMs}ms` : 'unlimited / no timeout';
 
-    // Attempt 1: With rotated cookie
-    if (cookiePath) {
-      const argsWithCookies = [...baseArgs, '--cookies', cookiePath];
-      try {
-        console.info(
-          `[AudioCache] ⏳ Downloading audio for ${cleanId} using cookie "${path.basename(cookiePath)}" (Timeout: ${timeoutDesc})...`
-        );
-        const res = await this.spawnProcess(ytDlpBin, argsWithCookies, extendedEnv, this.downloadTimeoutMs);
+    // Attempt 1: Multi-Cookie Rotation & Failover with yt-dlp
+    if (candidateCookiePaths.length > 0) {
+      const maxAttempts = Math.min(candidateCookiePaths.length, 3);
+      for (let i = 0; i < maxAttempts; i++) {
+        const currentCookie = candidateCookiePaths[i];
+        const cookieName = path.basename(currentCookie);
+        const argsWithCookies = [...baseArgs, '--cookies', currentCookie];
 
-        if (res.code === 0) {
-          const expectedMp3 = `${tempPrefix}.mp3`;
-          if (fs.existsSync(expectedMp3) && fs.statSync(expectedMp3).size > 10240) {
-            downloadedMp3Path = expectedMp3;
-            cookieRotator.reportCookieSuccess(cookiePath);
-            console.info(`[AudioCache] ✅ Primary download succeeded for ${cleanId} via cookie ${path.basename(cookiePath)}`);
-          } else {
-            console.warn(
-              `[AudioCache] ⚠️ yt-dlp finished with code 0, but output MP3 was missing or too small (<10KB) at ${expectedMp3}`
-            );
-          }
-        } else {
-          // Check for bot detection / invalid cookies
-          if (
-            /confirm you(?:'|’)?re not a bot|cookies are invalid|HTTP Error 401|login.*required/i.test(
-              res.stderr
-            )
-          ) {
-            cookieRotator.reportCookieFailure(cookiePath, res.stderr.slice(0, 150));
-            console.warn(`[AudioCache] ⚠️ Bot verification detected on cookie ${path.basename(cookiePath)}. Marking for cooldown...`);
-          }
-          console.error(
-            `[AudioCache] ❌ Primary yt-dlp download failed for video "${cleanId}" (Exit Code: ${res.code}):\n` +
-            `Binary: ${ytDlpBin}\n` +
-            `Cookie: ${path.basename(cookiePath)}\n` +
-            `Stderr Output:\n${res.stderr.trim() || '(no stderr produced)'}`
+        try {
+          console.info(
+            `[AudioCache] ⏳ Downloading audio for ${cleanId} using cookie "${cookieName}" (Attempt ${i + 1}/${maxAttempts}, Timeout: ${timeoutDesc})...`
           );
+          const res = await retryWithBackoff(
+            () => this.spawnProcess(ytDlpBin, argsWithCookies, extendedEnv, this.downloadTimeoutMs),
+            {
+              maxRetries: 1,
+              initialDelayMs: 600,
+              shouldRetry: (err) => isRetryableError(err),
+            }
+          );
+
+          if (res.code === 0) {
+            const expectedMp3 = `${tempPrefix}.mp3`;
+            if (fs.existsSync(expectedMp3) && fs.statSync(expectedMp3).size > 10240) {
+              downloadedMp3Path = expectedMp3;
+              cookieRotator.reportCookieSuccess(currentCookie);
+              console.info(`[AudioCache] ✅ Primary download succeeded for ${cleanId} via cookie "${cookieName}"`);
+              break; // Success! Exit cookie loop
+            } else {
+              console.warn(
+                `[AudioCache] ⚠️ yt-dlp finished with code 0, but output MP3 was missing or too small (<10KB) at ${expectedMp3}`
+              );
+            }
+          } else {
+            // Check for bot detection / invalid cookies
+            if (
+              /confirm you(?:'|’)?re not a bot|cookies are invalid|HTTP Error 401|login.*required/i.test(
+                res.stderr
+              )
+            ) {
+              cookieRotator.reportCookieFailure(currentCookie, res.stderr.slice(0, 150));
+              console.warn(`[AudioCache] ⚠️ Bot verification detected on cookie "${cookieName}". Trying next cookie in pool...`);
+            } else {
+              console.warn(
+                `[AudioCache] ⚠️ Download with cookie "${cookieName}" failed (code ${res.code}). Trying next cookie...`
+              );
+            }
+          }
+        } catch (err: any) {
+          cookieRotator.reportCookieFailure(currentCookie, err?.message || 'Download error');
+          console.warn(`[AudioCache] ⚠️ Error with cookie "${cookieName}": ${err?.message || err}. Trying next cookie...`);
         }
-      } catch (err: any) {
-        console.error(
-          `[AudioCache] ❌ Primary download threw error for "${cleanId}": ${err?.message || err}\n` +
-          (err?.stderr ? `Captured Stderr:\n${err.stderr}\n` : '')
-        );
       }
     }
 
@@ -304,8 +318,7 @@ class AudioCacheManager {
         '3',
         '--fragment-retries',
         '3',
-        '--user-agent',
-        getRandomStealthUserAgent(),
+        ...getYtDlpHeaderArgs(),
         '--extractor-args',
         'youtube:player_client=visionos,android,mweb',
         '--extract-audio',
@@ -319,7 +332,14 @@ class AudioCacheManager {
       ];
 
       try {
-        const res = await this.spawnProcess(ytDlpBin, fallbackArgs, extendedEnv, this.downloadTimeoutMs);
+        const res = await retryWithBackoff(
+          () => this.spawnProcess(ytDlpBin, fallbackArgs, extendedEnv, this.downloadTimeoutMs),
+          {
+            maxRetries: 2,
+            initialDelayMs: 1200,
+            shouldRetry: (err) => isRetryableError(err),
+          }
+        );
         if (res.code === 0) {
           const expectedMp3 = `${tempPrefix}.mp3`;
           if (fs.existsSync(expectedMp3) && fs.statSync(expectedMp3).size > 10240) {
@@ -503,7 +523,41 @@ class AudioCacheManager {
     };
   }
 
+  /**
+   * Clears all cached MP3 files from the disk cache.
+   * Returns the count of deleted files.
+   */
+  public clear(): number {
+    let deletedCount = 0;
+    try {
+      if (fs.existsSync(this.cacheDir)) {
+        const files = fs.readdirSync(this.cacheDir);
+        for (const file of files) {
+          if (file.endsWith('.mp3') || file.includes('.tmp-')) {
+            try {
+              fs.unlinkSync(path.join(this.cacheDir, file));
+              deletedCount++;
+            } catch {}
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[AudioCache] Failed to clear audio cache directory:', err);
+    }
+    return deletedCount;
+  }
+
   private findYtDlpBinary(): string {
+    if (process.env.YTDLP_PATH) {
+      const custom = process.env.YTDLP_PATH.trim();
+      if (custom === 'yt-dlp') return 'yt-dlp';
+      try {
+        if (fs.existsSync(custom) && fs.statSync(custom).isFile()) {
+          return custom;
+        }
+      } catch {}
+    }
+
     const home = process.env.HOME || '/root';
     const candidates = [
       path.join(home, '.local', 'bin', 'yt-dlp'),
@@ -525,7 +579,19 @@ class AudioCacheManager {
 
   private getExtendedEnv(): NodeJS.ProcessEnv {
     const home = process.env.HOME || '/root';
+    const customBinDirs: string[] = [];
+    if (process.env.FFMPEG_PATH) {
+      customBinDirs.push(path.dirname(process.env.FFMPEG_PATH));
+    }
+    if (process.env.DENO_PATH) {
+      customBinDirs.push(path.dirname(process.env.DENO_PATH));
+    }
+    if (process.env.YTDLP_PATH && process.env.YTDLP_PATH !== 'yt-dlp') {
+      customBinDirs.push(path.dirname(process.env.YTDLP_PATH));
+    }
+
     const binPaths = [
+      ...customBinDirs,
       path.join(home, '.local', 'bin'),
       path.join(home, '.deno', 'bin'),
       '/usr/local/bin',

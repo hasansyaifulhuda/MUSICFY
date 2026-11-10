@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { usePlayerStore, Track } from '@/lib/store';
-import { db } from '@/lib/db';
+import Image from 'next/image';
+import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Play,
@@ -33,12 +33,11 @@ import {
   SlidersHorizontal,
   ChevronUp,
   ExternalLink,
-  MoreVertical,
+  EllipsisVertical as MoreVertical,
 } from 'lucide-react';
 import { cn, getHighResImage } from '@/lib/utils';
-import Image from 'next/image';
-import { useRouter } from 'next/navigation';
-import { MarqueeText } from './MarqueeText';
+import { usePlayerStore, Track } from '@/lib/store';
+import { db } from '@/lib/db';
 import { toast } from '@/lib/toast';
 import { LyricLine, normalizeLyrics } from '@/lib/performance';
 import { lyricsWorkerClient } from '@/lib/lyricsWorkerClient';
@@ -51,22 +50,29 @@ import {
 import { useLyricsOffsetStore } from '@/lib/lyricsOffsetStore';
 import { autoCalibrateSilenceOffset } from '@/lib/smartLyricsSync';
 import { useMusic } from '@/context/MusicContext';
-import dynamic from 'next/dynamic';
-
-const AudioVisualizer = dynamic(
-  () => import('./AudioVisualizer').then((mod) => mod.AudioVisualizer),
-  { ssr: false }
-);
-
-const FullScreenLyrics = dynamic(
-  () => import('./FullScreenLyrics').then((mod) => mod.FullScreenLyrics),
-  { ssr: false }
-);
-import { FloatingLyricsPill } from './FloatingLyricsPill';
 import { useSleepTimerStore } from '@/lib/sleepTimerStore';
 import { useEqualizerStore } from '@/lib/audioEffects';
 import { useFloatingWidgetStore } from '@/lib/floatingWidgetStore';
 import { deduplicatedFetch } from '@/lib/clientDeduplication';
+import dynamic from 'next/dynamic';
+
+import { MarqueeText } from './MarqueeText';
+
+const AudioVisualizer = dynamic(
+  () => import('./AudioVisualizer').then((m) => m.AudioVisualizer),
+  { ssr: false, loading: () => null }
+);
+
+const FullScreenLyrics = dynamic(
+  () => import('./FullScreenLyrics').then((m) => m.FullScreenLyrics),
+  { ssr: false, loading: () => null }
+);
+
+const FloatingLyricsPill = dynamic(
+  () => import('./FloatingLyricsPill').then((m) => m.FloatingLyricsPill),
+  { ssr: false, loading: () => null }
+);
+
 import {
   MiniPlayerProgressBar,
   DesktopScrubber,
@@ -74,6 +80,7 @@ import {
   LyricsViewContainer,
 } from './PlayerScrubber';
 import { ComponentErrorBoundary } from './ComponentErrorBoundary';
+
 
 export function Player() {
   const router = useRouter();
@@ -107,24 +114,24 @@ export function Player() {
   const [isFullScreenLyricsOpen, setIsFullScreenLyricsOpen] = useState(false);
 
   // Music Context (Interruption-Aware Playback, Audio Focus, Seek, Volume & Liked Songs)
-  const {
-    togglePlay,
-    setPlaying,
-    playNext,
-    playPrev,
-    playQueueIndex,
-    moveQueueItem,
-    toggleShuffle,
-    toggleRepeat,
-    clearQueue,
-    isLiked: checkLiked,
-    toggleLike,
-    seekTo,
-    isMuted,
-    toggleMute,
-    setVolume,
-  } = useMusic();
-  const isLiked = currentTrack ? checkLiked(currentTrack.videoId) : false;
+  const music = useMusic();
+  const togglePlay = music?.togglePlay;
+  const setPlaying = music?.setPlaying;
+  const playNext = music?.playNext;
+  const playPrev = music?.playPrev;
+  const playQueueIndex = music?.playQueueIndex;
+  const moveQueueItem = music?.moveQueueItem;
+  const toggleShuffle = music?.toggleShuffle;
+  const toggleRepeat = music?.toggleRepeat;
+  const clearQueue = music?.clearQueue;
+  const checkLiked = music?.isLiked;
+  const toggleLike = music?.toggleLike;
+  const seekTo = music?.seekTo;
+  const isMuted = music?.isMuted ?? false;
+  const toggleMute = music?.toggleMute;
+  const setVolume = music?.setVolume;
+
+  const isLiked = Boolean(currentTrack && checkLiked?.(currentTrack.videoId));
 
   // Local Component State
   const [isDownloaded, setIsDownloaded] = useState(false);
@@ -196,6 +203,7 @@ export function Player() {
     };
     window.addEventListener('musicfy:reload-lyrics', handleReload);
     window.addEventListener('pmusic:reload-lyrics', handleReload);
+
     return () => {
       window.removeEventListener('musicfy:reload-lyrics', handleReload);
       window.removeEventListener('pmusic:reload-lyrics', handleReload);
@@ -262,6 +270,24 @@ export function Player() {
       // Automatically iterates through metadata variations and fallback queries (up to 5 passes)
       // until valid synchronized or plain lyrics are found.
       const dur = Math.round(duration || currentTrackDuration || 200);
+
+      // Fast-bail for long tracks (1-hour mixes, full albums, DJ sets, cover compilations)
+      // Prevents infinite loading and wasted network queries when lyrics naturally do not exist
+      const isLongAudioTrack =
+        dur > 600 ||
+        /(?:full\s*album|mix|nonstop|1\s*hour|1\s*jam|2\s*hour|live\s*set|compilation|dj\s*set|mashup)/i.test(
+          currentTrackName || ''
+        );
+
+      if (isLongAudioTrack) {
+        if (!isCancelled) {
+          setLyrics([]);
+          setIsSyncedLyrics(false);
+          setIsLyricsLoading(false);
+          setLyricsSearchPass(1);
+        }
+        return;
+      }
 
       // Clean metadata and extract primary artist for targeted passes
       const rawA = currentArtistName || '';
@@ -352,6 +378,17 @@ export function Player() {
           if (response.ok) {
             const data = await response.json();
             const payload = data?.result !== undefined ? data.result : data;
+
+            if (payload?.isLongAudio) {
+              if (!isCancelled) {
+                setLyrics([]);
+                setIsSyncedLyrics(false);
+                setIsLyricsLoading(false);
+                foundValidLyrics = true;
+              }
+              break;
+            }
+
             if (Array.isArray(payload?.lyrics) && payload.lyrics.length > 0) {
               const cleanLyrics = await lyricsWorkerClient.normalize(payload.lyrics, dur);
               const syncedVal = Boolean(payload.synced);
@@ -598,10 +635,7 @@ export function Player() {
       if (!isPlaying) setPlaying(true);
     },
     [seekTo, isPlaying, setPlaying, currentVideoId]
-  );
-
-  // Poin 84: Mini-Player Touch Gestures (Swipe left: Next, Swipe right: Prev, Swipe up: Expand)
-  const miniTouchStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  );  const miniTouchStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const didSwipeRef = useRef<boolean>(false);
 
   const handleMiniTouchStart = useCallback((e: React.TouchEvent) => {
@@ -624,15 +658,15 @@ export function Player() {
           navigator.vibrate?.(30);
         }
         if (dx < 0) {
-          playNext();
+          playNext?.();
           toast.info('Lagu berikutnya');
         } else {
-          playPrev();
+          playPrev?.();
           toast.info('Lagu sebelumnya');
         }
       } else if (dy < -40 && Math.abs(dy) > Math.abs(dx)) {
         didSwipeRef.current = true;
-        setExpanded(true);
+        setExpanded?.(true);
       }
     },
     [playNext, playPrev, setExpanded]
@@ -643,7 +677,7 @@ export function Player() {
       didSwipeRef.current = false;
       return;
     }
-    setExpanded(true);
+    setExpanded?.(true);
   }, [setExpanded]);
 
   if (!currentTrack) return null;
@@ -666,16 +700,31 @@ export function Player() {
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: 50, opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="fixed bottom-[68px] left-2 right-2 z-50 bg-[#181818]/95 backdrop-blur-xl rounded-xl p-2.5 flex items-center shadow-2xl border border-white/10 cursor-pointer overflow-hidden group select-none gpu-accelerated"
+              className="fixed bottom-[72px] left-3 right-3 sm:left-6 sm:right-6 max-w-lg mx-auto z-50 glass-dock rounded-2xl p-2.5 flex items-center shadow-[0_16px_40px_rgba(0,0,0,0.7)] border border-white/[0.14] cursor-pointer overflow-hidden group select-none gpu-accelerated"
+              style={{
+                touchAction: 'manipulation',
+                transform: 'translate3d(0, 0, 0)',
+                willChange: 'transform, opacity',
+              }}
               onTouchStart={handleMiniTouchStart}
               onTouchEnd={handleMiniTouchEnd}
+              onPointerDown={(e) => {
+                if (e.button === 0 && e.pointerType === 'mouse') handleMiniClick();
+              }}
               onClick={handleMiniClick}
             >
-              {/* Isolated High-Performance Progress Bar */}
+              {dominantColor && (
+                <div
+                  className="absolute inset-0 -z-10 opacity-30 pointer-events-none blur-xl transition-colors duration-700"
+                  style={{
+                    background: `radial-gradient(circle at 50% 50%, ${dominantColor} 0%, transparent 75%)`,
+                  }}
+                />
+              )}
+
               <MiniPlayerProgressBar />
 
-              {/* Cover Art */}
-              <div className="relative w-11 h-11 rounded-lg overflow-hidden shrink-0 mr-3 shadow-md bg-black/40">
+              <div className="relative w-11 h-11 rounded-xl overflow-hidden shrink-0 mr-3 shadow-md bg-black/40 border border-white/10">
                 <Image
                   src={thumbnail}
                   alt={currentTrack.name}
@@ -686,7 +735,6 @@ export function Player() {
                 />
               </div>
 
-              {/* Title & Artist */}
               <div className="flex-1 min-w-0 pr-2">
                 <MarqueeText text={currentTrack.name} className="text-white text-sm font-semibold tracking-tight" />
                 <div className="flex items-center gap-1.5 mt-0.5">
@@ -697,18 +745,33 @@ export function Player() {
                 </div>
               </div>
 
-              {/* Action Buttons */}
               <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                 <button
-                  onClick={handleLike}
-                  className="w-9 h-9 rounded-full flex items-center justify-center text-white/70 hover:text-white transition-colors cursor-pointer"
+                  onPointerDown={(e) => {
+                    if (e.button === 0) {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      handleLike();
+                    }
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-10 h-10 rounded-full flex items-center justify-center text-white/70 hover:text-white transition-colors cursor-pointer"
+                  style={{ touchAction: 'manipulation' }}
                   aria-label="Sukai lagu"
                 >
                   <Heart className={cn('w-5 h-5 transition-transform active:scale-125', isLiked && 'fill-[#1DB954] text-[#1DB954]')} />
                 </button>
                 <button
-                  onClick={togglePlay}
+                  onPointerDown={(e) => {
+                    if (e.button === 0) {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      togglePlay?.();
+                    }
+                  }}
+                  onClick={(e) => e.stopPropagation()}
                   className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shadow-lg cursor-pointer"
+                  style={{ touchAction: 'manipulation' }}
                   aria-label={isPlaying ? 'Pause' : 'Play'}
                 >
                   {isPlaying && isBuffering ? (
@@ -725,18 +788,22 @@ export function Player() {
         </AnimatePresence>
       </div>
 
-      {/* ========================================================================= */}
-      {/* 2. DESKTOP BOTTOM PLAYER BAR (PMUSIC Symmetrical 3-Column Bar)   */}
-      {/* ========================================================================= */}
       <footer
-        className="hidden md:flex fixed bottom-0 left-0 right-0 h-24 z-50 bg-[#181818] border-t border-[#282828] px-4 items-center justify-between select-none gpu-accelerated contain-paint"
-        style={{ boxShadow: '0 -4px 24px rgba(0,0,0,0.8)' }}
+        className="hidden md:flex fixed bottom-0 left-0 right-0 h-24 z-50 glass-panel border-t border-white/[0.08] px-6 items-center justify-between select-none gpu-accelerated contain-paint backdrop-blur-2xl"
+        style={{
+          boxShadow: '0 -8px 32px rgba(0,0,0,0.6)',
+          transform: 'translate3d(0, 0, 0)',
+          willChange: 'transform',
+        }}
       >
-        {/* LEFT COLUMN: Track Details, Like, Add & Download */}
         <div className="flex items-center w-[30%] min-w-[200px] max-w-[360px] gap-3">
           <div
-            className="relative w-14 h-14 rounded-md overflow-hidden shrink-0 shadow-lg cursor-pointer group"
-            onClick={() => setExpanded(true)}
+            className="relative w-14 h-14 rounded-xl overflow-hidden shrink-0 shadow-lg cursor-pointer group border border-white/10"
+            onPointerDown={(e) => {
+              if (e.button === 0) setExpanded?.(true);
+            }}
+            onClick={() => setExpanded?.(true)}
+            style={{ touchAction: 'manipulation' }}
           >
             <Image
               src={thumbnail}
@@ -752,8 +819,12 @@ export function Player() {
           </div>
           <div className="min-w-0 flex-1">
             <h4
-              onClick={() => setExpanded(true)}
+              onPointerDown={(e) => {
+                if (e.button === 0) setExpanded?.(true);
+              }}
+              onClick={() => setExpanded?.(true)}
               className="text-white text-sm font-semibold truncate hover:underline cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
             >
               {currentTrack.name}
             </h4>
@@ -762,13 +833,16 @@ export function Player() {
                 <span className="bg-white/20 text-[9px] px-1 py-0.2 rounded font-bold text-white">E</span>
               )}
               <span
-                onClick={() => {
-                  const artistId = Array.isArray(currentTrack.artist)
-                    ? currentTrack.artist[0]?.artistId
-                    : currentTrack.artist?.artistId;
-                  if (artistId) router.push(`/artist/${artistId}`);
+                onPointerDown={(e) => {
+                  if (e.button === 0) {
+                    const artistId = Array.isArray(currentTrack.artist)
+                      ? currentTrack.artist[0]?.artistId
+                      : currentTrack.artist?.artistId;
+                    if (artistId) router?.push(`/artist/${artistId}`);
+                  }
                 }}
                 className="text-[#b3b3b3] text-xs truncate hover:underline hover:text-white cursor-pointer"
+                style={{ touchAction: 'manipulation' }}
               >
                 {artistName}
               </span>
@@ -776,23 +850,32 @@ export function Player() {
           </div>
           <div className="flex items-center gap-1 shrink-0 text-[#b3b3b3]">
             <button
-              onClick={handleLike}
+              onPointerDown={(e) => {
+                if (e.button === 0) handleLike();
+              }}
               className="p-1.5 hover:text-white transition-colors cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title={isLiked ? 'Hapus dari lagu yang disukai' : 'Simpan ke lagu yang disukai'}
             >
               <Heart className={cn('w-5 h-5', isLiked && 'fill-[#1DB954] text-[#1DB954]')} />
             </button>
             <button
-              onClick={() => setTrackToAdd(currentTrack)}
+              onPointerDown={(e) => {
+                if (e.button === 0) setTrackToAdd?.(currentTrack);
+              }}
               className="p-1.5 hover:text-white transition-colors cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title="Tambahkan ke Playlist"
             >
               <ListPlus className="w-5 h-5" />
             </button>
             <button
-              onClick={handleDownload}
+              onPointerDown={(e) => {
+                if (e.button === 0 && !isDownloading) handleDownload();
+              }}
               disabled={isDownloading}
               className="p-1.5 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
+              style={{ touchAction: 'manipulation' }}
               title={isDownloaded ? 'Tersimpan offline' : 'Download untuk offline'}
             >
               {isDownloading ? (
@@ -806,16 +889,17 @@ export function Player() {
           </div>
         </div>
 
-        {/* CENTER COLUMN: Playback Controls & Enhanced Thick High-Contrast Seek Bar */}
         <div className="flex flex-col items-center w-[40%] max-w-[680px]">
-          {/* Controls Cluster */}
           <div className="flex items-center gap-5 mb-1.5">
             <button
-              onClick={toggleShuffle}
+              onPointerDown={(e) => {
+                if (e.button === 0) toggleShuffle?.();
+              }}
               className={cn(
                 'relative p-1 transition-colors cursor-pointer',
                 isShuffle ? 'text-[#1DB954]' : 'text-[#b3b3b3] hover:text-white'
               )}
+              style={{ touchAction: 'manipulation' }}
               title="Acak"
             >
               <Shuffle className="w-4 h-4" />
@@ -823,20 +907,26 @@ export function Player() {
             </button>
 
             <button
-              onClick={playPrev}
+              onPointerDown={(e) => {
+                if (e.button === 0) playPrev?.();
+              }}
               className="text-[#b3b3b3] hover:text-white transition-colors p-1 cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title="Sebelumnya"
             >
               <SkipBack className="w-5 h-5 fill-current" />
             </button>
 
             <button
-              onClick={togglePlay}
-              className="w-9 h-9 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shadow-md cursor-pointer"
+              onPointerDown={(e) => {
+                if (e.button === 0) togglePlay?.();
+              }}
+              className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shadow-lg cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying && isBuffering ? (
-                <Loader2 className="w-4 h-4 animate-spin text-black" />
+                <Loader2 className="w-5 h-5 animate-spin text-black" />
               ) : isPlaying ? (
                 <Pause className="w-5 h-5 fill-current" />
               ) : (
@@ -845,19 +935,25 @@ export function Player() {
             </button>
 
             <button
-              onClick={playNext}
+              onPointerDown={(e) => {
+                if (e.button === 0) playNext?.();
+              }}
               className="text-[#b3b3b3] hover:text-white transition-colors p-1 cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title="Berikutnya"
             >
               <SkipForward className="w-5 h-5 fill-current" />
             </button>
 
             <button
-              onClick={toggleRepeat}
+              onPointerDown={(e) => {
+                if (e.button === 0) toggleRepeat?.();
+              }}
               className={cn(
                 'relative p-1 transition-colors cursor-pointer',
                 repeatMode !== 'off' ? 'text-[#1DB954]' : 'text-[#b3b3b3] hover:text-white'
               )}
+              style={{ touchAction: 'manipulation' }}
               title="Ulangi"
             >
               {repeatMode === 'one' ? <Repeat1 className="w-4 h-4" /> : <Repeat className="w-4 h-4" />}
@@ -867,24 +963,25 @@ export function Player() {
             </button>
           </div>
 
-          {/* Enhanced Duration Progress Bar: Isolated Scrubber */}
           <DesktopScrubber onSeekCommit={handleSeekCommit} />
         </div>
 
-        {/* RIGHT COLUMN: Lyrics, Queue, Volume Slider & Fullscreen Toggle */}
         <div className="flex items-center justify-end w-[30%] min-w-[200px] max-w-[360px] gap-3 text-[#b3b3b3]">
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              setActiveView('lyrics');
-              setExpanded(true);
+            onPointerDown={(e) => {
+              if (e.button === 0) {
+                e.stopPropagation();
+                e.preventDefault();
+                setActiveView('lyrics');
+                setExpanded?.(true);
+              }
             }}
             className={cn(
               'p-1.5 hover:text-white transition-colors cursor-pointer',
               isExpanded && activeView === 'lyrics' && 'text-[#1DB954]'
             )}
+            style={{ touchAction: 'manipulation' }}
             title="Lirik"
           >
             <Mic2 className="w-5 h-5" />
@@ -892,16 +989,19 @@ export function Player() {
 
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              setActiveView('queue');
-              setExpanded(true);
+            onPointerDown={(e) => {
+              if (e.button === 0) {
+                e.stopPropagation();
+                e.preventDefault();
+                setActiveView('queue');
+                setExpanded?.(true);
+              }
             }}
             className={cn(
               'p-1.5 hover:text-white transition-colors cursor-pointer',
               isExpanded && activeView === 'queue' && 'text-[#1DB954]'
             )}
+            style={{ touchAction: 'manipulation' }}
             title="Antrean Up Next"
           >
             <ListMusic className="w-5 h-5" />
@@ -909,15 +1009,18 @@ export function Player() {
 
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              openEqualizerModal();
+            onPointerDown={(e) => {
+              if (e.button === 0) {
+                e.stopPropagation();
+                e.preventDefault();
+                openEqualizerModal?.();
+              }
             }}
             className={cn(
               'relative p-1.5 hover:text-white transition-colors cursor-pointer hidden lg:block',
               isEqualizerEnabled ? 'text-[#1DB954]' : 'hover:text-white'
             )}
+            style={{ touchAction: 'manipulation' }}
             title="Equalizer Suara"
           >
             <SlidersHorizontal className="w-5 h-5" />
@@ -928,15 +1031,18 @@ export function Player() {
 
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              openSleepTimerModal();
+            onPointerDown={(e) => {
+              if (e.button === 0) {
+                e.stopPropagation();
+                e.preventDefault();
+                openSleepTimerModal?.();
+              }
             }}
             className={cn(
               'relative p-1.5 hover:text-white transition-colors cursor-pointer hidden lg:block',
               isSleepTimerActive ? 'text-[#1DB954]' : 'hover:text-white'
             )}
+            style={{ touchAction: 'manipulation' }}
             title="Pengatur Waktu Tidur"
           >
             <Moon className="w-5 h-5" />
@@ -945,11 +1051,13 @@ export function Player() {
             )}
           </button>
 
-          {/* Volume Control */}
           <div className="flex items-center gap-2 group/vol w-28">
             <button
-              onClick={toggleMute}
+              onPointerDown={(e) => {
+                if (e.button === 0) toggleMute?.();
+              }}
               className="hover:text-white transition-colors cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title="Volume"
             >
               {isMuted || volume === 0 ? (
@@ -961,7 +1069,7 @@ export function Player() {
               )}
             </button>
             <div className="relative flex-1 flex items-center group py-2 cursor-pointer">
-              <div className="w-full h-1.5 bg-[#333333] rounded-full overflow-hidden relative">
+              <div className="w-full h-1.5 bg-white/20 rounded-full overflow-hidden relative">
                 <div
                   className="h-full bg-white group-hover:bg-[#1DB954] rounded-full transition-colors"
                   style={{ width: `${isMuted ? 0 : volume}%` }}
@@ -972,7 +1080,7 @@ export function Player() {
                 min={0}
                 max={100}
                 value={isMuted ? 0 : volume}
-                onChange={(e) => setVolume(Number(e.target.value))}
+                onChange={(e) => setVolume?.(Number(e.target.value))}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
               />
             </div>
@@ -980,13 +1088,16 @@ export function Player() {
 
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              openFloatingWidget();
-              setExpanded(false);
+            onPointerDown={(e) => {
+              if (e.button === 0) {
+                e.stopPropagation();
+                e.preventDefault();
+                openFloatingWidget?.();
+                setExpanded?.(false);
+              }
             }}
             className="p-1.5 hover:text-white transition-colors cursor-pointer"
+            style={{ touchAction: 'manipulation' }}
             title="Mini-Player Melayang (PiP)"
           >
             <ExternalLink className="w-5 h-5" />
@@ -994,12 +1105,15 @@ export function Player() {
 
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              setExpanded(!isExpanded);
+            onPointerDown={(e) => {
+              if (e.button === 0) {
+                e.stopPropagation();
+                e.preventDefault();
+                setExpanded?.(!isExpanded);
+              }
             }}
             className="p-1.5 hover:text-white transition-colors cursor-pointer"
+            style={{ touchAction: 'manipulation' }}
             title={isExpanded ? 'Tutup Fullscreen' : 'Buka Fullscreen'}
           >
             {isExpanded ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
@@ -1041,7 +1155,7 @@ export function Player() {
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
-                  setExpanded(false);
+                  setExpanded?.(false);
                 }}
                 className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer"
                 aria-label="Tutup"
@@ -1109,7 +1223,7 @@ export function Player() {
                     onClick={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
-                      openEqualizerModal();
+                      openEqualizerModal?.();
                     }}
                     className={cn(
                       'relative w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors cursor-pointer',
@@ -1128,7 +1242,7 @@ export function Player() {
                     onClick={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
-                      openSleepTimerModal();
+                      openSleepTimerModal?.();
                     }}
                     className={cn(
                       'relative w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors cursor-pointer',
@@ -1147,8 +1261,8 @@ export function Player() {
                     onClick={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
-                      openFloatingWidget();
-                      setExpanded(false);
+                      openFloatingWidget?.();
+                      setExpanded?.(false);
                     }}
                     className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer"
                     title="Mini-Player Melayang (PiP)"
@@ -1234,7 +1348,7 @@ export function Player() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setIsMobileUtilityMenuOpen(false);
-                              openEqualizerModal();
+                              openEqualizerModal?.();
                             }}
                             className={cn(
                               'flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors cursor-pointer w-full',
@@ -1268,7 +1382,7 @@ export function Player() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setIsMobileUtilityMenuOpen(false);
-                              openSleepTimerModal();
+                              openSleepTimerModal?.();
                             }}
                             className={cn(
                               'flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors cursor-pointer w-full',
@@ -1302,8 +1416,8 @@ export function Player() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setIsMobileUtilityMenuOpen(false);
-                              openFloatingWidget();
-                              setExpanded(false);
+                              openFloatingWidget?.();
+                              setExpanded?.(false);
                             }}
                             className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-left hover:bg-white/10 transition-colors cursor-pointer w-full text-white/90"
                           >
@@ -1416,7 +1530,7 @@ export function Player() {
                       onClick={(e) => {
                         e.stopPropagation();
                         e.preventDefault();
-                        setExpanded(true);
+                        setExpanded?.(true);
                         setIsFullScreenLyricsOpen(true);
                       }}
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 active:scale-95 text-white rounded-full text-xs font-bold transition-all shadow-lg backdrop-blur-md cursor-pointer"
@@ -1471,7 +1585,7 @@ export function Player() {
                           onClick={(e) => {
                             e.stopPropagation();
                             e.preventDefault();
-                            clearQueue();
+                            clearQueue?.();
                           }}
                           className="text-xs text-white/60 hover:text-white transition-colors cursor-pointer"
                         >
@@ -1495,7 +1609,7 @@ export function Player() {
                             onClick={(e) => {
                               e.stopPropagation();
                               e.preventDefault();
-                              playQueueIndex(idx);
+                              playQueueIndex?.(idx);
                             }}
                             className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/10 transition-colors group cursor-pointer border border-transparent hover:border-white/5 relative"
                           >
@@ -1530,7 +1644,7 @@ export function Player() {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   e.preventDefault();
-                                  moveQueueItem(idx, idx - 1);
+                                  moveQueueItem?.(idx, idx - 1);
                                 }}
                                 disabled={isFirstNext}
                                 className="p-1.5 text-white/50 hover:text-white disabled:opacity-20 disabled:hover:text-white/50 transition-colors cursor-pointer"
@@ -1544,7 +1658,7 @@ export function Player() {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   e.preventDefault();
-                                  moveQueueItem(idx, idx + 1);
+                                  moveQueueItem?.(idx, idx + 1);
                                 }}
                                 disabled={isLastInQueue}
                                 className="p-1.5 text-white/50 hover:text-white disabled:opacity-20 disabled:hover:text-white/50 transition-colors cursor-pointer"
@@ -1558,7 +1672,7 @@ export function Player() {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   e.preventDefault();
-                                  removeFromQueue(idx);
+                                  removeFromQueue?.(idx);
                                 }}
                                 className="p-1.5 text-white/40 hover:text-red-400 transition-colors cursor-pointer"
                                 title="Hapus dari antrean"
@@ -1599,8 +1713,8 @@ export function Player() {
                           ? currentTrack.artist[0]?.artistId
                           : currentTrack.artist?.artistId;
                         if (artistId) {
-                          setExpanded(false);
-                          router.push(`/artist/${artistId}`);
+                          setExpanded?.(false);
+                          router?.push(`/artist/${artistId}`);
                         }
                       }}
                       className="text-white/70 text-base truncate hover:underline hover:text-white cursor-pointer"
@@ -1612,15 +1726,21 @@ export function Player() {
 
                 <div className="flex items-center gap-3">
                   <button
-                    onClick={() => setTrackToAdd(currentTrack)}
+                    onPointerDown={(e) => {
+                      if (e.button === 0) setTrackToAdd?.(currentTrack);
+                    }}
                     className="p-2 text-white/70 hover:text-white transition-colors cursor-pointer"
+                    style={{ touchAction: 'manipulation' }}
                     title="Tambahkan ke Playlist"
                   >
                     <ListPlus className="w-6 h-6" />
                   </button>
                   <button
-                    onClick={handleLike}
+                    onPointerDown={(e) => {
+                      if (e.button === 0) handleLike();
+                    }}
                     className="p-2 text-white/70 hover:text-white transition-colors cursor-pointer"
+                    style={{ touchAction: 'manipulation' }}
                     title="Sukai lagu"
                   >
                     <Heart className={cn('w-7 h-7 transition-transform active:scale-125', isLiked && 'fill-[#1DB954] text-[#1DB954]')} />
@@ -1628,17 +1748,18 @@ export function Player() {
                 </div>
               </div>
 
-              {/* Enhanced Duration Progress Bar (Thick & High-Contrast Scrubber) */}
               <ExpandedScrubber onSeekCommit={handleSeekCommit} />
 
-              {/* Main Playback Controls Cluster */}
               <div className="flex items-center justify-between px-2 mb-4">
                 <button
-                  onClick={toggleShuffle}
+                  onPointerDown={(e) => {
+                    if (e.button === 0) toggleShuffle?.();
+                  }}
                   className={cn(
                     'relative p-2 transition-colors cursor-pointer',
                     isShuffle ? 'text-[#1DB954]' : 'text-white/60 hover:text-white'
                   )}
+                  style={{ touchAction: 'manipulation' }}
                   title="Acak"
                 >
                   <Shuffle className="w-6 h-6" />
@@ -1646,16 +1767,22 @@ export function Player() {
                 </button>
 
                 <button
-                  onClick={playPrev}
+                  onPointerDown={(e) => {
+                    if (e.button === 0) playPrev?.();
+                  }}
                   className="p-2 text-white/80 hover:text-white hover:scale-105 active:scale-95 transition-all cursor-pointer"
+                  style={{ touchAction: 'manipulation' }}
                   title="Sebelumnya"
                 >
                   <SkipBack className="w-9 h-9 fill-current" />
                 </button>
 
                 <button
-                  onClick={togglePlay}
+                  onPointerDown={(e) => {
+                    if (e.button === 0) togglePlay?.();
+                  }}
                   className="w-18 h-18 md:w-20 md:h-20 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shadow-2xl cursor-pointer"
+                  style={{ touchAction: 'manipulation' }}
                   title={isPlaying ? 'Pause' : 'Play'}
                 >
                   {isPlaying && isBuffering ? (
@@ -1668,19 +1795,25 @@ export function Player() {
                 </button>
 
                 <button
-                  onClick={playNext}
+                  onPointerDown={(e) => {
+                    if (e.button === 0) playNext?.();
+                  }}
                   className="p-2 text-white/80 hover:text-white hover:scale-105 active:scale-95 transition-all cursor-pointer"
+                  style={{ touchAction: 'manipulation' }}
                   title="Berikutnya"
                 >
                   <SkipForward className="w-9 h-9 fill-current" />
                 </button>
 
                 <button
-                  onClick={toggleRepeat}
+                  onPointerDown={(e) => {
+                    if (e.button === 0) toggleRepeat?.();
+                  }}
                   className={cn(
                     'relative p-2 transition-colors cursor-pointer',
                     repeatMode !== 'off' ? 'text-[#1DB954]' : 'text-white/60 hover:text-white'
                   )}
+                  style={{ touchAction: 'manipulation' }}
                   title="Ulangi"
                 >
                   {repeatMode === 'one' ? <Repeat1 className="w-6 h-6" /> : <Repeat className="w-6 h-6" />}
@@ -1694,21 +1827,21 @@ export function Player() {
         )}
       </AnimatePresence>
 
-      {/* Immersive Full Screen Karaoke Lyrics Modal (Batch 2 - Poin 24) */}
+      {/* Immersive Full Screen Karaoke Lyrics Modal */}
       <AnimatePresence>
         {isFullScreenLyricsOpen && (
           <ComponentErrorBoundary
             fallbackTitle="Lirik Layar Penuh"
             onReset={() => {
               setIsFullScreenLyricsOpen(false);
-              setExpanded(true);
+              setExpanded?.(true);
             }}
           >
             <FullScreenLyrics
               lyrics={lyrics}
               onClose={() => {
                 setIsFullScreenLyricsOpen(false);
-                setExpanded(true);
+                setExpanded?.(true);
               }}
               onSeek={handleLyricClick}
               isSynced={isSyncedLyrics}
@@ -1718,15 +1851,18 @@ export function Player() {
         )}
       </AnimatePresence>
 
-      {/* Compact Floating Lyrics Pill Quick View (Batch 3 - Poin 80) */}
+      {/* Compact Floating Lyrics Pill Quick View */}
       <FloatingLyricsPill
         lyrics={lyrics}
         isSynced={isSyncedLyrics}
         onOpenLyrics={() => {
-          setExpanded(true);
+          setExpanded?.(true);
           setIsFullScreenLyricsOpen(true);
         }}
       />
     </>
   );
 }
+
+export default Player;
+

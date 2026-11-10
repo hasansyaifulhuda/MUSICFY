@@ -1,6 +1,5 @@
 /**
  * Centralized Blob URL Registry & Anti-Memory Leak Manager
- * Master Blueprint PMUSIC Architecture - Phase 1.1 (Point 3)
  *
  * Responsibilities:
  * 1. Maintain a Set registry of all active Blob URLs in browser memory.

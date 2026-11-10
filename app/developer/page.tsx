@@ -73,7 +73,7 @@ export default function DeveloperDiagnosticPage() {
       setTelemetryLogs(getTelemetryLogs());
 
       // Web Audio Telemetry
-      const chain = (window as any).__PMUSIC_EFFECTS_CHAIN__;
+      const chain = (window as any).__MUSICFY_EFFECTS_CHAIN__;
       if (chain?.context) {
         setAudioCtxState(chain.context.state);
         setAudioSampleRate(chain.context.sampleRate);

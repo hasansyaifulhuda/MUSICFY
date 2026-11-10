@@ -20,7 +20,6 @@ interface State {
 
 /**
  * Enterprise Global & Modular Error Boundary
- * Master Blueprint PMUSIC Architecture - Batch 2 (Poin 26)
  *
  * Guarantees:
  * 1. Prevents Total White Screen of Death (WSOD) across all route and audio lifecycles.

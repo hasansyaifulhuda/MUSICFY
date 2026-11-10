@@ -5,7 +5,6 @@ import { toast } from './toast';
 
 /**
  * Enterprise Web Audio API Engine & Equalizer Controller
- * Master Blueprint PMUSIC Architecture - Batch 2 (Poin 20 & 21)
  *
  * Guarantees:
  * 1. Singleton AudioContext and MediaElementAudioSourceNode across DOM lifecycles.
@@ -18,9 +17,9 @@ import { toast } from './toast';
 
 declare global {
   interface Window {
-    __PMUSIC_AUDIO_CONTEXT__?: AudioContext;
-    __PMUSIC_MEDIA_SOURCE__?: MediaElementAudioSourceNode;
-    __PMUSIC_EFFECTS_CHAIN__?: AudioEffectsChain;
+    __MUSICFY_AUDIO_CONTEXT__?: AudioContext;
+    __MUSICFY_MEDIA_SOURCE__?: MediaElementAudioSourceNode;
+    __MUSICFY_EFFECTS_CHAIN__?: AudioEffectsChain;
   }
 }
 
@@ -115,6 +114,7 @@ export interface EqualizerStoreState {
   isSpatialSurround: boolean;
   reverbPreset: ReverbPreset;
   isModalOpen: boolean;
+  hydrateFromStorage: () => void;
 
   openModal: () => void;
   closeModal: () => void;
@@ -144,8 +144,8 @@ export function initAudioEffects(): AudioEffectsChain | null {
     return activeChain;
   }
 
-  if (window.__PMUSIC_EFFECTS_CHAIN__) {
-    activeChain = window.__PMUSIC_EFFECTS_CHAIN__;
+  if (window.__MUSICFY_EFFECTS_CHAIN__) {
+    activeChain = window.__MUSICFY_EFFECTS_CHAIN__;
     return activeChain;
   }
 
@@ -161,17 +161,17 @@ export function initAudioEffects(): AudioEffectsChain | null {
 
     // Reuse window global context if previously created
     const ctx: AudioContext =
-      window.__PMUSIC_AUDIO_CONTEXT__ ||
+      window.__MUSICFY_AUDIO_CONTEXT__ ||
       new AudioContextClass({ latencyHint: 'playback' });
-    window.__PMUSIC_AUDIO_CONTEXT__ = ctx;
+    window.__MUSICFY_AUDIO_CONTEXT__ = ctx;
 
     // Reuse or create MediaElementAudioSourceNode (Only call createMediaElementSource once!)
     let source: MediaElementAudioSourceNode;
-    if (window.__PMUSIC_MEDIA_SOURCE__) {
-      source = window.__PMUSIC_MEDIA_SOURCE__;
+    if (window.__MUSICFY_MEDIA_SOURCE__) {
+      source = window.__MUSICFY_MEDIA_SOURCE__;
     } else {
       source = ctx.createMediaElementSource(audio);
-      window.__PMUSIC_MEDIA_SOURCE__ = source;
+      window.__MUSICFY_MEDIA_SOURCE__ = source;
     }
 
     // 1. Dedicated Bass Boost Filter (LowShelf at 80Hz)
@@ -207,7 +207,7 @@ export function initAudioEffects(): AudioEffectsChain | null {
     analyser.minDecibels = -90;
     analyser.maxDecibels = -10;
 
-    // 5. Connect Audio Processing Pipeline with Reverb DSP & Spatial 3D Audio (Batch 3 - Poin 73):
+    // 5. Connect Audio Processing Pipeline with Reverb DSP & Spatial 3D Audio:
     source.connect(bassBoostFilter);
     let previousNode: AudioNode = bassBoostFilter;
 
@@ -247,10 +247,7 @@ export function initAudioEffects(): AudioEffectsChain | null {
       }
     } else {
       mixGain.connect(analyser);
-    }
-
-    // Poin 93: Web Audio API Peak Limiter & Anti-Clipping Compressor
-    // Prevents digital clipping/distortion when Bass Boost or Equalizer bands are boosted
+    }    // Prevents digital clipping/distortion when Bass Boost or Equalizer bands are boosted
     const peakLimiter = ctx.createDynamicsCompressor();
     peakLimiter.threshold.setValueAtTime(-0.5, ctx.currentTime);
     peakLimiter.knee.setValueAtTime(0.0, ctx.currentTime);
@@ -274,7 +271,7 @@ export function initAudioEffects(): AudioEffectsChain | null {
       wetGain,
       peakLimiter,
     };
-    window.__PMUSIC_EFFECTS_CHAIN__ = activeChain;
+    window.__MUSICFY_EFFECTS_CHAIN__ = activeChain;
 
     // Apply currently saved store state to nodes
     applyCurrentStoreSettingsToNodes();
@@ -319,10 +316,46 @@ function createImpulseResponse(ctx: AudioContext, durationSeconds: number, decay
  */
 export function resumeAudioContextSafely(): void {
   if (typeof window === 'undefined') return;
-  const chain = activeChain || window.__PMUSIC_EFFECTS_CHAIN__;
+  const chain = activeChain || window.__MUSICFY_EFFECTS_CHAIN__;
   if (chain && chain.context.state === 'suspended') {
     chain.context.resume().catch(() => {});
   }
+}
+
+/**
+ * Smoothly fades out audio volume using Web Audio API GainNode linear/exponential ramp.
+ * Perfect for Sleep Timer fade-out without causing audio clicks or pops.
+ */
+export async function fadeOutWebAudioGain(durationSeconds: number = 5): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    const chain = activeChain || window.__MUSICFY_EFFECTS_CHAIN__;
+    if (chain && chain.context && chain.preampGain) {
+      const ctx = chain.context;
+      const gainNode = chain.preampGain;
+      const now = ctx.currentTime;
+      gainNode.gain.cancelScheduledValues(now);
+      gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+      gainNode.gain.linearRampToValueAtTime(0.0001, now + durationSeconds);
+    }
+  } catch {}
+}
+
+/**
+ * Restores Web Audio API GainNode volume back to nominal 1.0 (after sleep timer stops or resumes).
+ */
+export function restoreWebAudioGain(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const chain = activeChain || window.__MUSICFY_EFFECTS_CHAIN__;
+    if (chain && chain.context && chain.preampGain) {
+      const ctx = chain.context;
+      const gainNode = chain.preampGain;
+      const now = ctx.currentTime;
+      gainNode.gain.cancelScheduledValues(now);
+      gainNode.gain.setValueAtTime(1.0, now);
+    }
+  } catch {}
 }
 
 /**
@@ -330,7 +363,7 @@ export function resumeAudioContextSafely(): void {
  */
 export function getPeakLimiterReduction(): number {
   if (typeof window === 'undefined') return 0;
-  const chain = activeChain || window.__PMUSIC_EFFECTS_CHAIN__;
+  const chain = activeChain || window.__MUSICFY_EFFECTS_CHAIN__;
   if (chain?.peakLimiter) {
     return chain.peakLimiter.reduction;
   }
@@ -342,7 +375,7 @@ export function getPeakLimiterReduction(): number {
  * Uses a cached buffer to prevent Garbage Collection allocation thrashing at 60fps.
  */
 export function getRealtimeFrequencyData(): Uint8Array<ArrayBuffer> | null {
-  const chain = activeChain || window.__PMUSIC_EFFECTS_CHAIN__;
+  const chain = activeChain || window.__MUSICFY_EFFECTS_CHAIN__;
   if (!chain || !chain.analyser) return null;
 
   if (!sharedFrequencyBuffer || sharedFrequencyBuffer.length !== chain.analyser.frequencyBinCount) {
@@ -364,7 +397,7 @@ function applySettingsToNodes(
   isSpatialSurround?: boolean,
   reverbPreset?: ReverbPreset
 ) {
-  const chain = activeChain || window.__PMUSIC_EFFECTS_CHAIN__;
+  const chain = activeChain || window.__MUSICFY_EFFECTS_CHAIN__;
   if (!chain) return;
 
   const ctx = chain.context;
@@ -399,13 +432,13 @@ function applySettingsToNodes(
   const attenuation = maxBoost > 3 ? Math.pow(10, -((maxBoost - 3) * 0.4) / 20) : 1.0;
   chain.preampGain.gain.setTargetAtTime(attenuation, now, rampTime);
 
-  // Apply Spatial 3D Surround (Batch 3 - Poin 73)
+  // Apply Spatial 3D Surround
   if (chain.spatialPanner) {
     const pannerValue = isSpatialSurround ? 0.08 : 0;
     chain.spatialPanner.pan.setTargetAtTime(pannerValue, now, rampTime);
   }
 
-  // Apply Reverb DSP Filter (Batch 3 - Poin 73)
+  // Apply Reverb DSP Filter
   if (chain.convolver && chain.wetGain && chain.dryGain) {
     const activeReverb = reverbPreset || 'off';
     if (activeReverb === 'off') {
@@ -436,7 +469,7 @@ function applyCurrentStoreSettingsToNodes() {
 }
 
 /**
- * Load initial persisted equalizer configuration safely
+ * Deterministic initial equalizer state for 100% SSR hydration consistency.
  */
 function getInitialEqualizerState(): {
   isEnabled: boolean;
@@ -446,7 +479,7 @@ function getInitialEqualizerState(): {
   isSpatialSurround: boolean;
   reverbPreset: ReverbPreset;
 } {
-  const fallback = {
+  return {
     isEnabled: true,
     activePreset: 'Flat',
     bands: [0, 0, 0, 0, 0] as [number, number, number, number, number],
@@ -454,24 +487,6 @@ function getInitialEqualizerState(): {
     isSpatialSurround: false,
     reverbPreset: 'off' as ReverbPreset,
   };
-
-  if (typeof window === 'undefined') return fallback;
-
-  try {
-    const raw = debouncedLocalStorageGet(EQ_STORAGE_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    return {
-      isEnabled: typeof parsed.isEnabled === 'boolean' ? parsed.isEnabled : fallback.isEnabled,
-      activePreset: parsed.activePreset || fallback.activePreset,
-      bands: Array.isArray(parsed.bands) && parsed.bands.length === 5 ? parsed.bands : fallback.bands,
-      bassBoost: typeof parsed.bassBoost === 'number' ? parsed.bassBoost : fallback.bassBoost,
-      isSpatialSurround: Boolean(parsed.isSpatialSurround),
-      reverbPreset: (parsed.reverbPreset && parsed.reverbPreset in REVERB_PRESETS) ? parsed.reverbPreset : 'off',
-    };
-  } catch {
-    return fallback;
-  }
 }
 
 const initialState = getInitialEqualizerState();
@@ -484,6 +499,23 @@ export const useEqualizerStore = create<EqualizerStoreState>((set, get) => ({
   isSpatialSurround: initialState.isSpatialSurround,
   reverbPreset: initialState.reverbPreset,
   isModalOpen: false,
+
+  hydrateFromStorage: () => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = debouncedLocalStorageGet(EQ_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      set({
+        isEnabled: typeof parsed.isEnabled === 'boolean' ? parsed.isEnabled : true,
+        activePreset: parsed.activePreset || 'Flat',
+        bands: Array.isArray(parsed.bands) && parsed.bands.length === 5 ? parsed.bands : [0, 0, 0, 0, 0],
+        bassBoost: typeof parsed.bassBoost === 'number' ? parsed.bassBoost : 0,
+        isSpatialSurround: Boolean(parsed.isSpatialSurround),
+        reverbPreset: (parsed.reverbPreset && parsed.reverbPreset in REVERB_PRESETS) ? parsed.reverbPreset : 'off',
+      });
+    } catch {}
+  },
 
   openModal: () => {
     initAudioEffects();

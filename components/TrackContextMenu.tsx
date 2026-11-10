@@ -21,7 +21,6 @@ import { cn } from '@/lib/utils';
 
 /**
  * Enterprise Contextual Long-Press & Right-Click Quick Menu
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 78)
  *
  * Guarantees:
  * 1. Absolute viewport positioning with overflow collision avoidance.
@@ -195,7 +194,11 @@ export const TrackContextMenu = memo(function TrackContextMenu() {
 
       <div className="space-y-0.5">
         <button
+          onPointerDown={(e) => {
+            if (e.button === 0) handlePlayNow();
+          }}
           onClick={handlePlayNow}
+          style={{ touchAction: 'manipulation' }}
           className="w-full flex items-center gap-3 px-3 py-2 text-xs font-semibold rounded-xl hover:bg-white/10 text-white/90 hover:text-white transition-colors cursor-pointer text-left"
         >
           <Play className="w-4 h-4 fill-white text-white shrink-0" />
@@ -203,7 +206,11 @@ export const TrackContextMenu = memo(function TrackContextMenu() {
         </button>
 
         <button
+          onPointerDown={(e) => {
+            if (e.button === 0) handlePlayNext();
+          }}
           onClick={handlePlayNext}
+          style={{ touchAction: 'manipulation' }}
           className="w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer text-left"
         >
           <ListPlus className="w-4 h-4 text-white/70 shrink-0" />
@@ -211,7 +218,11 @@ export const TrackContextMenu = memo(function TrackContextMenu() {
         </button>
 
         <button
+          onPointerDown={(e) => {
+            if (e.button === 0) handleAddToQueue();
+          }}
           onClick={handleAddToQueue}
+          style={{ touchAction: 'manipulation' }}
           className="w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer text-left"
         >
           <ListVideo className="w-4 h-4 text-white/70 shrink-0" />
@@ -219,7 +230,11 @@ export const TrackContextMenu = memo(function TrackContextMenu() {
         </button>
 
         <button
+          onPointerDown={(e) => {
+            if (e.button === 0) handleToggleLike();
+          }}
           onClick={handleToggleLike}
+          style={{ touchAction: 'manipulation' }}
           className="w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer text-left"
         >
           <Heart
@@ -232,7 +247,11 @@ export const TrackContextMenu = memo(function TrackContextMenu() {
         </button>
 
         <button
+          onPointerDown={(e) => {
+            if (e.button === 0) handleAddToPlaylist();
+          }}
           onClick={handleAddToPlaylist}
+          style={{ touchAction: 'manipulation' }}
           className="w-full flex items-center gap-3 px-3 py-2 text-xs font-medium rounded-xl hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer text-left"
         >
           <FolderPlus className="w-4 h-4 text-white/70 shrink-0" />
@@ -274,3 +293,6 @@ export const TrackContextMenu = memo(function TrackContextMenu() {
     </div>
   );
 });
+
+export default TrackContextMenu;
+

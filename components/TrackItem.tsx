@@ -29,7 +29,6 @@ export const TrackItem = memo(function TrackItem({
   index,
   onRemove,
 }: TrackItemProps) {
-  // Fine-grained Zustand selectors to prevent unnecessary re-renders in large lists
   const playTrack = usePlayerStore((state) => state.playTrack);
   const isCurrent = usePlayerStore((state) => state.currentTrack?.videoId === track.videoId);
   const isPlayingCurrent = usePlayerStore(
@@ -37,10 +36,10 @@ export const TrackItem = memo(function TrackItem({
   );
   const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
 
-  // Touch long-press refs
   const touchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const touchStartPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const didLongPressRef = useRef<boolean>(false);
+  const pointerStartRef = useRef<{ x: number; y: number; time: number }>({ x: 0, y: 0, time: 0 });
 
   useEffect(() => {
     return () => {
@@ -60,13 +59,40 @@ export const TrackItem = memo(function TrackItem({
     return (track.artist as any)?.name || 'Unknown Artist';
   }, [track.artist]);
 
-  const handleClick = useCallback(() => {
+  const executePlay = useCallback(() => {
     if (didLongPressRef.current) {
       didLongPressRef.current = false;
       return;
     }
     playTrack(track, queue, 'playlist', index);
   }, [playTrack, track, queue, index]);
+
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      pointerStartRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
+
+      if (e.pointerType === 'mouse') {
+        executePlay();
+      }
+    },
+    [executePlay]
+  );
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType === 'touch') {
+        const dx = Math.abs(e.clientX - pointerStartRef.current.x);
+        const dy = Math.abs(e.clientY - pointerStartRef.current.y);
+        const elapsed = Date.now() - pointerStartRef.current.time;
+
+        if (dx < 12 && dy < 12 && elapsed < 400 && !didLongPressRef.current) {
+          executePlay();
+        }
+      }
+    },
+    [executePlay]
+  );
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
@@ -116,18 +142,22 @@ export const TrackItem = memo(function TrackItem({
     }
   }, []);
 
-  const handleOptionsClick = useCallback(
-    (e: React.MouseEvent) => {
+  const handleOptionsPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
       e.stopPropagation();
+      e.preventDefault();
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
       openContextMenu(track, { x: rect.left - 140, y: rect.bottom + 6 });
     },
     [openContextMenu, track]
   );
 
-  const handleRemoveClick = useCallback(
-    (e: React.MouseEvent) => {
+  const handleRemovePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
       e.stopPropagation();
+      e.preventDefault();
       if (onRemove) onRemove(track);
     },
     [onRemove, track]
@@ -135,23 +165,27 @@ export const TrackItem = memo(function TrackItem({
 
   return (
     <div
-      className="flex items-center p-2 md:p-2.5 hover:bg-white/10 rounded-md cursor-pointer group transition-colors select-none content-auto gpu-accelerated"
-      onClick={handleClick}
+      className="flex items-center p-2 md:p-2.5 hover:bg-white/[0.08] active:bg-white/[0.12] rounded-xl cursor-pointer group transition-all duration-150 select-none content-auto gpu-accelerated"
+      style={{
+        touchAction: 'manipulation',
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
       onContextMenu={handleContextMenu}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
       onTouchCancel={handleTouchEnd}
     >
-      {/* Optional Track Number on Desktop */}
       {index !== undefined && (
         <span className="w-8 text-center text-sm font-medium text-[#b3b3b3] group-hover:hidden shrink-0">
           {index + 1}
         </span>
       )}
 
-      {/* Album Art with Equalizer / Play Overlay */}
-      <div className="relative w-11 h-11 rounded-[4px] overflow-hidden shrink-0 shadow bg-white/5">
+      <div className="relative w-11 h-11 rounded-lg overflow-hidden shrink-0 shadow bg-white/5 border border-white/[0.06]">
         <Image
           src={thumbnail}
           alt={track.name}
@@ -163,7 +197,7 @@ export const TrackItem = memo(function TrackItem({
           className="object-cover"
         />
         {isPlayingCurrent ? (
-          <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 flex items-center justify-center backdrop-blur-xs">
             <Equalizer size="sm" />
           </div>
         ) : (
@@ -173,7 +207,6 @@ export const TrackItem = memo(function TrackItem({
         )}
       </div>
 
-      {/* Track Title & Artist (Marquee enabled only on currently active track to save 90% ResizeObservers) */}
       <div className="ml-3 flex-1 min-w-0 pr-2">
         <MarqueeText
           text={track.name}
@@ -188,30 +221,32 @@ export const TrackItem = memo(function TrackItem({
         </div>
       </div>
 
-      {/* Duration */}
       {track.duration && (
         <span className="hidden sm:block text-xs text-[#b3b3b3] font-mono tabular-nums pr-2">
           {formatTrackDuration(track.duration)}
         </span>
       )}
 
-      {/* Action Buttons */}
       <div className="flex items-center gap-1 shrink-0">
         {onRemove && (
           <button
             className="p-1.5 text-white/40 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 cursor-pointer"
-            onClick={handleRemoveClick}
+            onPointerDown={handleRemovePointerDown}
+            onClick={(e) => e.stopPropagation()}
             title="Hapus"
             aria-label="Hapus dari antrean"
+            style={{ touchAction: 'manipulation' }}
           >
             <Trash2 className="w-4 h-4" />
           </button>
         )}
         <button
           className="p-1.5 text-white/40 hover:text-white transition-colors cursor-pointer"
-          onClick={handleOptionsClick}
+          onPointerDown={handleOptionsPointerDown}
+          onClick={(e) => e.stopPropagation()}
           title="Opsi"
           aria-label="Opsi lagu"
+          style={{ touchAction: 'manipulation' }}
         >
           <MoreHorizontal className="w-5 h-5" />
         </button>

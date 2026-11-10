@@ -28,8 +28,8 @@ export function createSuccessResponse<T = any>(
 ): NextResponse<ApiSuccessPayload<T>> {
   const payload: ApiSuccessPayload<T> =
     typeof result === 'object' && result !== null && !Array.isArray(result)
-      ? { status: true, message, result, ...(result as Record<string, any>) }
-      : { status: true, message, result };
+      ? { status: true, message, result, data: result, ...(result as Record<string, any>) }
+      : { status: true, message, result, data: result };
 
   return NextResponse.json(payload, {
     status: statusCode,

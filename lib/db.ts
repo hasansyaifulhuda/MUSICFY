@@ -1,5 +1,5 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
-import { Track } from './store';
+import type { Track } from './store';
 import { LyricLine, normalizeLyrics } from './performance';
 import { compressString, decompressString } from './compression';
 
@@ -236,7 +236,7 @@ class DatabaseManager {
       }
     }
 
-    // 3. Initiate safe connection with granular schema upgrade migrations (Batch 3 - Poin 61)
+    // 3. Initiate safe connection with granular schema upgrade migrations
     this.openingPromise = openDB<SannMusicDB>(DB_NAME, DB_VERSION, {
       upgrade(db, oldVersion, newVersion, transaction) {
         console.info(`[IndexedDB Migration] Migrating schema: v${oldVersion} -> v${newVersion}`);
@@ -378,17 +378,133 @@ export async function requestPersistentStorage(): Promise<boolean> {
   }
 }
 
+const LIKED_SNAPSHOT_KEY = 'musicfy_liked_songs_snapshot';
+const PLAYLISTS_SNAPSHOT_KEY = 'musicfy_playlists_snapshot';
+
+function syncBroadcastEvent(eventType: string, data?: any) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent(eventType, { detail: data }));
+    if (typeof BroadcastChannel !== 'undefined') {
+      const channel = new BroadcastChannel('musicfy_sync_channel');
+      channel.postMessage({ type: eventType, data, timestamp: Date.now() });
+      channel.close();
+    }
+  } catch {}
+}
+
+function saveLikedSnapshot(songs: Track[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(LIKED_SNAPSHOT_KEY, JSON.stringify(songs.slice(0, 500)));
+  } catch {}
+}
+
+function getLikedSnapshot(): Track[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(LIKED_SNAPSHOT_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+function savePlaylistsSnapshot(playlists: CustomPlaylist[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(PLAYLISTS_SNAPSHOT_KEY, JSON.stringify(playlists));
+  } catch {}
+}
+
+function getPlaylistsSnapshot(): CustomPlaylist[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(PLAYLISTS_SNAPSHOT_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+// -------------------------------------------------------------
+// Ultra-Fast In-Memory Cache Layer (0ms Instant Navigation)
+// -------------------------------------------------------------
+let memoryCachedLikedSongs: Track[] | null = null;
+let memoryCachedPlaylists: CustomPlaylist[] | null = null;
+let memoryCachedOfflineTracks: OfflineTrack[] | null = null;
+let memoryCachedSubscribedArtists: SubscribedArtist[] | null = null;
+let memoryCachedSavedAlbums: SavedAlbum[] | null = null;
+
 export const db = {
+  // Synchronous in-memory getters for frame-0 instant rendering
+  getCachedLikedSongs(): Track[] {
+    if (memoryCachedLikedSongs) return memoryCachedLikedSongs;
+    const snap = getLikedSnapshot();
+    if (snap.length > 0) {
+      memoryCachedLikedSongs = snap;
+      return snap;
+    }
+    return [];
+  },
+
+  getCachedPlaylists(): CustomPlaylist[] {
+    if (memoryCachedPlaylists) return memoryCachedPlaylists;
+    const snap = getPlaylistsSnapshot();
+    if (snap.length > 0) {
+      memoryCachedPlaylists = snap;
+      return snap;
+    }
+    return [];
+  },
+
+  getCachedOfflineTracks(): OfflineTrack[] {
+    return memoryCachedOfflineTracks || [];
+  },
+
+  getCachedSubscribedArtists(): SubscribedArtist[] {
+    return memoryCachedSubscribedArtists || [];
+  },
+
+  getCachedSavedAlbums(): SavedAlbum[] {
+    return memoryCachedSavedAlbums || [];
+  },
+
   // -------------------------------------------------------------
-  // Custom Playlists (IndexedDB Powered)
+  // Custom Playlists (IndexedDB Powered with Resilient Snapshot Backup)
   // -------------------------------------------------------------
   async getPlaylists(): Promise<CustomPlaylist[]> {
     if (typeof window === 'undefined') return [];
+    if (memoryCachedPlaylists && memoryCachedPlaylists.length > 0) {
+      return memoryCachedPlaylists;
+    }
     try {
-      return await dbManager.executeWithRetry((idb) => idb.getAll('playlists'));
+      const data = await dbManager.executeWithRetry((idb) => idb.getAll('playlists'));
+      if (data && data.length > 0) {
+        memoryCachedPlaylists = data;
+        savePlaylistsSnapshot(data);
+        return data;
+      }
+      // Reconcile from snapshot if IndexedDB was emptied or corrupted
+      const snapshot = getPlaylistsSnapshot();
+      if (snapshot.length > 0) {
+        memoryCachedPlaylists = snapshot;
+        for (const pl of snapshot) {
+          dbManager.executeWithRetry((idb) => idb.put('playlists', pl)).catch(() => {});
+        }
+        return snapshot;
+      }
+      memoryCachedPlaylists = data || [];
+      return memoryCachedPlaylists;
     } catch (err) {
-      console.warn('[IDB] Failed to get playlists:', err);
-      return [];
+      console.warn('[IDB] Failed to get playlists, falling back to snapshot:', err);
+      const snapshot = getPlaylistsSnapshot();
+      memoryCachedPlaylists = snapshot;
+      return snapshot;
     }
   },
 
@@ -396,6 +512,10 @@ export const db = {
     if (typeof window === 'undefined' || !playlist?.id) return false;
     try {
       await dbManager.executeWithRetry((idb) => idb.put('playlists', playlist));
+      const playlists = await dbManager.executeWithRetry((idb) => idb.getAll('playlists'));
+      memoryCachedPlaylists = playlists;
+      savePlaylistsSnapshot(playlists);
+      syncBroadcastEvent('musicfy:playlists-changed', { action: 'add', playlist });
       return true;
     } catch (err) {
       console.warn('[IDB] Failed to add/update playlist:', err);
@@ -416,6 +536,9 @@ export const db = {
     };
     try {
       await dbManager.executeWithRetry((idb) => idb.put('playlists', newPlaylist));
+      const playlists = await dbManager.executeWithRetry((idb) => idb.getAll('playlists'));
+      savePlaylistsSnapshot(playlists);
+      syncBroadcastEvent('musicfy:playlists-changed', { action: 'create', playlist: newPlaylist });
       return newPlaylist;
     } catch (err) {
       console.warn('[IDB] Failed to create custom playlist:', err);
@@ -435,6 +558,9 @@ export const db = {
           updatedAt: Date.now(),
         };
         await idb.put('playlists', updated);
+        const playlists = await idb.getAll('playlists');
+        savePlaylistsSnapshot(playlists);
+        syncBroadcastEvent('musicfy:playlists-changed', { action: 'update', playlist: updated });
         return true;
       });
     } catch (err) {
@@ -461,6 +587,9 @@ export const db = {
           updatedAt: Date.now(),
         };
         await idb.put('playlists', updated);
+        const playlists = await idb.getAll('playlists');
+        savePlaylistsSnapshot(playlists);
+        syncBroadcastEvent('musicfy:playlists-changed', { action: 'addSong', playlistId, track });
         return true;
       });
     } catch (err) {
@@ -482,6 +611,10 @@ export const db = {
           updatedAt: Date.now(),
         };
         await idb.put('playlists', updated);
+        const playlists = await idb.getAll('playlists');
+        memoryCachedPlaylists = playlists;
+        savePlaylistsSnapshot(playlists);
+        syncBroadcastEvent('musicfy:playlists-changed', { action: 'removeSong', playlistId, videoId });
         return true;
       });
     } catch (err) {
@@ -496,7 +629,8 @@ export const db = {
       return await dbManager.executeWithRetry((idb) => idb.get('playlists', id));
     } catch (err) {
       console.warn(`[IDB] Failed to get playlist ${id}:`, err);
-      return undefined;
+      const snapshot = getPlaylistsSnapshot();
+      return snapshot.find((p) => p.id === id);
     }
   },
 
@@ -504,6 +638,10 @@ export const db = {
     if (typeof window === 'undefined' || !id) return false;
     try {
       await dbManager.executeWithRetry((idb) => idb.delete('playlists', id));
+      const playlists = await dbManager.executeWithRetry((idb) => idb.getAll('playlists'));
+      memoryCachedPlaylists = playlists;
+      savePlaylistsSnapshot(playlists);
+      syncBroadcastEvent('musicfy:playlists-changed', { action: 'delete', playlistId: id });
       return true;
     } catch (err) {
       console.warn(`[IDB] Failed to delete playlist ${id}:`, err);
@@ -512,15 +650,36 @@ export const db = {
   },
 
   // -------------------------------------------------------------
-  // Liked Songs
+  // Liked Songs (IndexedDB with Resilient LocalStorage Redundancy)
   // -------------------------------------------------------------
   async getLikedSongs(): Promise<Track[]> {
     if (typeof window === 'undefined') return [];
+    if (memoryCachedLikedSongs && memoryCachedLikedSongs.length > 0) {
+      return memoryCachedLikedSongs;
+    }
     try {
-      return await dbManager.executeWithRetry((idb) => idb.getAll('liked_songs'));
+      const data = await dbManager.executeWithRetry((idb) => idb.getAll('liked_songs'));
+      if (data && data.length > 0) {
+        memoryCachedLikedSongs = data;
+        saveLikedSnapshot(data);
+        return data;
+      }
+      // Reconcile from snapshot if IndexedDB was cleared or temporarily unavailable
+      const snapshot = getLikedSnapshot();
+      if (snapshot.length > 0) {
+        memoryCachedLikedSongs = snapshot;
+        for (const track of snapshot) {
+          dbManager.executeWithRetry((idb) => idb.put('liked_songs', track)).catch(() => {});
+        }
+        return snapshot;
+      }
+      memoryCachedLikedSongs = data || [];
+      return memoryCachedLikedSongs;
     } catch (err) {
-      console.warn('[IDB] Failed to get liked songs:', err);
-      return [];
+      console.warn('[IDB] Failed to get liked songs, falling back to snapshot:', err);
+      const snapshot = getLikedSnapshot();
+      memoryCachedLikedSongs = snapshot;
+      return snapshot;
     }
   },
 
@@ -531,7 +690,14 @@ export const db = {
   async addLikedSong(track: Track): Promise<boolean> {
     if (typeof window === 'undefined' || !track?.videoId) return false;
     try {
+      if (memoryCachedLikedSongs) {
+        memoryCachedLikedSongs = [track, ...memoryCachedLikedSongs.filter((t) => t.videoId !== track.videoId)];
+      }
       await dbManager.executeWithRetry((idb) => idb.put('liked_songs', track));
+      const current = await this.getLikedSongs();
+      memoryCachedLikedSongs = current;
+      saveLikedSnapshot(current);
+      syncBroadcastEvent('musicfy:liked-songs-changed', { action: 'add', track });
       return true;
     } catch (err) {
       console.warn('[IDB] Failed to add liked song:', err);
@@ -542,7 +708,14 @@ export const db = {
   async removeLikedSong(videoId: string): Promise<boolean> {
     if (typeof window === 'undefined' || !videoId) return false;
     try {
+      if (memoryCachedLikedSongs) {
+        memoryCachedLikedSongs = memoryCachedLikedSongs.filter((t) => t.videoId !== videoId);
+      }
       await dbManager.executeWithRetry((idb) => idb.delete('liked_songs', videoId));
+      const current = await this.getLikedSongs();
+      memoryCachedLikedSongs = current;
+      saveLikedSnapshot(current);
+      syncBroadcastEvent('musicfy:liked-songs-changed', { action: 'remove', videoId });
       return true;
     } catch (err) {
       console.warn(`[IDB] Failed to remove liked song ${videoId}:`, err);
@@ -554,9 +727,12 @@ export const db = {
     if (typeof window === 'undefined' || !videoId) return false;
     try {
       const song = await dbManager.executeWithRetry((idb) => idb.get('liked_songs', videoId));
-      return Boolean(song);
+      if (song) return true;
+      const snapshot = getLikedSnapshot();
+      return snapshot.some((s) => s.videoId === videoId);
     } catch {
-      return false;
+      const snapshot = getLikedSnapshot();
+      return snapshot.some((s) => s.videoId === videoId);
     }
   },
 
@@ -565,17 +741,25 @@ export const db = {
   // -------------------------------------------------------------
   async getSubscribedArtists(): Promise<SubscribedArtist[]> {
     if (typeof window === 'undefined') return [];
+    if (memoryCachedSubscribedArtists && memoryCachedSubscribedArtists.length > 0) {
+      return memoryCachedSubscribedArtists;
+    }
     try {
-      return await dbManager.executeWithRetry((idb) => idb.getAll('subscribed_artists'));
+      const artists = await dbManager.executeWithRetry((idb) => idb.getAll('subscribed_artists'));
+      memoryCachedSubscribedArtists = artists || [];
+      return memoryCachedSubscribedArtists;
     } catch (err) {
       console.warn('[IDB] Failed to get subscribed artists:', err);
-      return [];
+      return memoryCachedSubscribedArtists || [];
     }
   },
 
   async addSubscribedArtist(artist: SubscribedArtist): Promise<boolean> {
     if (typeof window === 'undefined' || !artist?.artistId) return false;
     try {
+      if (memoryCachedSubscribedArtists) {
+        memoryCachedSubscribedArtists = [artist, ...memoryCachedSubscribedArtists.filter(a => a.artistId !== artist.artistId)];
+      }
       await dbManager.executeWithRetry((idb) => idb.put('subscribed_artists', artist));
       return true;
     } catch (err) {
@@ -587,6 +771,9 @@ export const db = {
   async removeSubscribedArtist(artistId: string): Promise<boolean> {
     if (typeof window === 'undefined' || !artistId) return false;
     try {
+      if (memoryCachedSubscribedArtists) {
+        memoryCachedSubscribedArtists = memoryCachedSubscribedArtists.filter(a => a.artistId !== artistId);
+      }
       await dbManager.executeWithRetry((idb) => idb.delete('subscribed_artists', artistId));
       return true;
     } catch (err) {
@@ -610,17 +797,25 @@ export const db = {
   // -------------------------------------------------------------
   async getSavedAlbums(): Promise<SavedAlbum[]> {
     if (typeof window === 'undefined') return [];
+    if (memoryCachedSavedAlbums && memoryCachedSavedAlbums.length > 0) {
+      return memoryCachedSavedAlbums;
+    }
     try {
-      return await dbManager.executeWithRetry((idb) => idb.getAll('saved_albums'));
+      const albums = await dbManager.executeWithRetry((idb) => idb.getAll('saved_albums'));
+      memoryCachedSavedAlbums = albums || [];
+      return memoryCachedSavedAlbums;
     } catch (err) {
       console.warn('[IDB] Failed to get saved albums:', err);
-      return [];
+      return memoryCachedSavedAlbums || [];
     }
   },
 
   async addSavedAlbum(album: SavedAlbum): Promise<boolean> {
     if (typeof window === 'undefined' || !album?.albumId) return false;
     try {
+      if (memoryCachedSavedAlbums) {
+        memoryCachedSavedAlbums = [album, ...memoryCachedSavedAlbums.filter(a => a.albumId !== album.albumId)];
+      }
       await dbManager.executeWithRetry((idb) => idb.put('saved_albums', album));
       return true;
     } catch (err) {
@@ -632,6 +827,9 @@ export const db = {
   async removeSavedAlbum(albumId: string): Promise<boolean> {
     if (typeof window === 'undefined' || !albumId) return false;
     try {
+      if (memoryCachedSavedAlbums) {
+        memoryCachedSavedAlbums = memoryCachedSavedAlbums.filter(a => a.albumId !== albumId);
+      }
       await dbManager.executeWithRetry((idb) => idb.delete('saved_albums', albumId));
       return true;
     } catch (err) {
@@ -717,6 +915,9 @@ export const db = {
 
   async getOfflineTracks(): Promise<OfflineTrack[]> {
     if (typeof window === 'undefined') return [];
+    if (memoryCachedOfflineTracks && memoryCachedOfflineTracks.length > 0) {
+      return memoryCachedOfflineTracks;
+    }
     try {
       const items = await dbManager.executeWithRetry((idb) => idb.getAll('offline_tracks'));
       const validItems = (items || [])
@@ -729,10 +930,11 @@ export const db = {
         });
       offlineTrackIdsCache.clear();
       validItems.forEach((it) => offlineTrackIdsCache.add(it.videoId));
+      memoryCachedOfflineTracks = validItems;
       return validItems;
     } catch (err) {
       console.warn('[IDB] Failed to get offline tracks:', err);
-      return [];
+      return memoryCachedOfflineTracks || [];
     }
   },
 
@@ -1005,6 +1207,11 @@ export const db = {
     try {
       await dbManager.executeWithRetry((idb) => idb.put('offline_tracks', item));
       offlineTrackIdsCache.add(track.videoId);
+      if (memoryCachedOfflineTracks) {
+        memoryCachedOfflineTracks = [item, ...memoryCachedOfflineTracks.filter((t) => t.videoId !== track.videoId)];
+      } else {
+        memoryCachedOfflineTracks = [item];
+      }
 
       // Broadcast offline sync event across the application
       if (typeof window !== 'undefined') {
@@ -1139,6 +1346,9 @@ export const db = {
     try {
       await dbManager.executeWithRetry((idb) => idb.delete('offline_tracks', videoId));
       offlineTrackIdsCache.delete(videoId);
+      if (memoryCachedOfflineTracks) {
+        memoryCachedOfflineTracks = memoryCachedOfflineTracks.filter((t) => t.videoId !== videoId);
+      }
 
       // Broadcast offline sync event
       if (typeof window !== 'undefined') {
@@ -1154,7 +1364,7 @@ export const db = {
   },
 
   async isOfflineTrack(videoId: string): Promise<boolean> {
-    if (typeof window === 'undefined' || !videoId) return false;
+    if (!videoId) return false;
     if (offlineTrackIdsCache.has(videoId)) return true;
     try {
       const item = await dbManager.executeWithRetry((idb) => idb.get('offline_tracks', videoId));
@@ -1175,6 +1385,7 @@ export const db = {
     try {
       await dbManager.executeWithRetry((idb) => idb.clear('offline_tracks'));
       offlineTrackIdsCache.clear();
+      memoryCachedOfflineTracks = [];
 
       // Broadcast offline sync event
       if (typeof window !== 'undefined') {
@@ -1191,6 +1402,12 @@ export const db = {
 
   async clearAllIndexedDB(): Promise<boolean> {
     if (typeof window === 'undefined') return false;
+    memoryCachedLikedSongs = null;
+    memoryCachedPlaylists = null;
+    memoryCachedOfflineTracks = null;
+    memoryCachedSubscribedArtists = null;
+    memoryCachedSavedAlbums = null;
+    offlineTrackIdsCache.clear();
     const stores = [
       'playlists',
       'liked_songs',
@@ -1218,7 +1435,7 @@ export const db = {
   },
 
   /**
-   * Health & diagnostics metadata inspection (Batch 3 - Poin 76)
+   * Health & diagnostics metadata inspection
    */
   async getDatabaseInfo(): Promise<{
     name: string;
@@ -1262,7 +1479,7 @@ export const db = {
   },
 
   /**
-   * Offline Local Full-Text Search Indexing (Batch 3 - Poin 72)
+   * Offline Local Full-Text Search Indexing
    * Evaluates title, artist, and playlist names locally without server dependency
    */
   async searchLocalOffline(query: string, limit = 25): Promise<Track[]> {
@@ -1305,7 +1522,7 @@ export const db = {
   },
 
   /**
-   * Poin 64: Memory-Bound Cache Compression
+   * Memory-Bound Cache Compression
    * Stores structured data or text into 'metadata_cache' with native GZIP compression
    * to conserve browser storage quota and RAM.
    */
@@ -1350,7 +1567,7 @@ export const db = {
   },
 
   /**
-   * Poin 64: Decompresses and retrieves cached metadata or lyrics from 'metadata_cache'.
+   * Decompresses and retrieves cached metadata or lyrics from 'metadata_cache'.
    */
   async getMetadataCache<T = any>(key: string): Promise<T | null> {
     if (typeof window === 'undefined' || !key) return null;
@@ -1387,8 +1604,15 @@ export const db = {
     } catch {}
   },
 
+  async clearMetadataCache(): Promise<void> {
+    if (typeof window === 'undefined') return;
+    try {
+      await dbManager.executeWithRetry((idb) => idb.clear('metadata_cache'));
+    } catch {}
+  },
+
   /**
-   * Poin 91: Automated IndexedDB Blob & Cache Pruning
+   * Automated IndexedDB Blob & Cache Pruning
    * Periodically purges expired metadata cache items and cleans orphan storage fragments.
    */
   async pruneExpiredBlobsAndCache(): Promise<{

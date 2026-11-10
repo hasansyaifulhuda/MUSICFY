@@ -4,7 +4,6 @@ import { create } from 'zustand';
 
 /**
  * Enterprise Network Latency Monitor & Adaptive Resource Loading
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 89 & 98)
  *
  * Guarantees:
  * 1. Precision Round Trip Time (RTT) measurement in milliseconds.
@@ -45,7 +44,7 @@ export const useNetworkStore = create<NetworkState>((set, get) => ({
   downlinkMb: null,
   saveData: false,
   tier: 'good',
-  isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+  isOnline: true,
   lastCheckedAt: 0,
 
   measureLatency: async (): Promise<number | null> => {

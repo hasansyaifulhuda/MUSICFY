@@ -1,6 +1,6 @@
 'use client';
 
-import { ArrowLeft, Search, Play, Shuffle, MoreVertical, X, Clock, Heart } from 'lucide-react';
+import { ArrowLeft, Search, Play, Shuffle, X, Clock, Heart, EllipsisVertical as MoreVertical } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { usePlayerStore, Track } from '@/lib/store';
 import Image from 'next/image';
@@ -195,7 +195,7 @@ export default function Top50Page() {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  setTrackToAdd(track);
+                  setTrackToAdd?.(track);
                 }}
                 className="p-2 text-white/40 hover:text-white transition-colors cursor-pointer"
                 title="Tambahkan ke Playlist"

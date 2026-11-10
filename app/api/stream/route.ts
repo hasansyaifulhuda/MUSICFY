@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { resolveAudioStream, sanitizeVideoId } from '@/lib/audioResolver';
+import { resolveAudioStream, sanitizeVideoId, createYtDlpProgressiveStream } from '@/lib/audioResolver';
 import { audioCache } from '@/lib/audioCache';
 import { streamCache } from '@/lib/cache';
 import { streamLimiter, getClientIp, createRateLimitResponse } from '@/lib/rateLimit';
@@ -7,7 +7,7 @@ import { createErrorResponse, createSuccessResponse } from '@/lib/apiResponse';
 import { cookieManager } from '@/lib/cookieRotator';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 180; // 3-minute execution limit for long yt-dlp transcoding and downloading
+export const maxDuration = 180; // 3-minute execution limit for long streaming tasks
 
 export async function GET(request: Request) {
   // 1. In-Memory Rate Limiting Layer
@@ -51,7 +51,7 @@ export async function GET(request: Request) {
 
   try {
     // -------------------------------------------------------------
-    // Tier 1: Check Server-Side VPS Audio Cache (Instant Hit)
+    // Tier 1: Check Server-Side VPS Audio Cache (Instant 0ms Hit)
     // -------------------------------------------------------------
     const cachedDisk = audioCache.getCachedAudio(videoId);
 
@@ -90,39 +90,47 @@ export async function GET(request: Request) {
     }
 
     // -------------------------------------------------------------
-    // Tier 2: Cache Miss - Download & Cache to VPS Disk (if applicable)
+    // Explicit Download Request Handling (Full File Attachment)
     // -------------------------------------------------------------
-    // Only attempt disk cache download if not an iTunes lookup ID
-    if (!videoId.startsWith('itunes:') && !isJsonRequested && !isRedirectRequested) {
+    if (isDownloadRequested && !videoId.startsWith('itunes:')) {
       try {
         const cachedFilePath = await audioCache.ensureAudioCached(videoId);
         return audioCache.serveCachedAudio(request, cachedFilePath, videoId, {
-          asAttachment: isDownloadRequested,
+          asAttachment: true,
           filename: customTitle,
         });
-      } catch (cacheDownloadErr: any) {
-        console.error(
-          `[StreamRoute] ❌ VPS disk caching failed for "${videoId}". Falling back to live stream proxy:\n` +
-          (cacheDownloadErr?.stack || cacheDownloadErr?.message || cacheDownloadErr)
-        );
-        // Fallback to upstream live streaming proxy below
+      } catch (dlErr: any) {
+        console.error(`[StreamRoute] ❌ Full download caching failed for "${videoId}":`, dlErr?.message || dlErr);
+        // Fallback to streaming proxy with attachment disposition below
       }
     }
 
     // -------------------------------------------------------------
-    // Tier 3: Upstream Stream Resolution & Live Proxy Streaming
+    // Tier 2: PROGRESSIVE ON-THE-FLY CHUNK STREAMING (YouTube-Style)
+    // Zero waiting for 100% download. Starts playback instantly!
     // -------------------------------------------------------------
     const isMemCached = streamCache.has(videoId);
-    const stream = await resolveAudioStream(videoId, quality);
-
-    // If stream URL was successfully resolved, trigger non-blocking disk caching in background
-    if (!videoId.startsWith('itunes:')) {
-      setTimeout(() => {
-        audioCache.ensureAudioCached(videoId).catch(() => {});
-      }, 500);
+    let stream;
+    try {
+      stream = await resolveAudioStream(videoId, quality);
+    } catch (resolveErr) {
+      console.warn(`[StreamRoute] Direct resolution failed for "${videoId}". Falling back to on-the-fly pipe:`, resolveErr);
+      // Fallback directly to real-time yt-dlp stdout pipe
+      const progressivePipe = createYtDlpProgressiveStream(videoId, request.signal);
+      const pipeHeaders = new Headers();
+      pipeHeaders.set('Content-Type', progressivePipe.contentType);
+      pipeHeaders.set('Transfer-Encoding', 'chunked');
+      pipeHeaders.set('Cache-Control', 'no-cache');
+      pipeHeaders.set('Access-Control-Allow-Origin', '*');
+      pipeHeaders.set('X-Playback-Mode', 'progressive-ytdlp-pipe');
+      pipeHeaders.set('X-RateLimit-Remaining', String(rateLimit.remaining));
+      return new Response(progressivePipe.stream, {
+        status: 200,
+        headers: pipeHeaders,
+      });
     }
 
-    // 3A. JSON Metadata Response
+    // 2A. JSON Metadata Response
     if (isJsonRequested) {
       return createSuccessResponse(
         {
@@ -148,7 +156,7 @@ export async function GET(request: Request) {
       );
     }
 
-    // 3B. 302 Redirection Response
+    // 2B. 302 Redirection Response
     if (isRedirectRequested) {
       return NextResponse.redirect(stream.url, {
         status: 302,
@@ -159,7 +167,7 @@ export async function GET(request: Request) {
       });
     }
 
-    // 3C. Live Streaming Proxy Mode (High Resilience & Seeking)
+    // 2C. Live Progressive Streaming Proxy Mode (High Resilience & Byte Range Seeking)
     const upstreamHeaders: Record<string, string> = {
       'User-Agent':
         stream.httpHeaders['User-Agent'] ||
@@ -173,49 +181,122 @@ export async function GET(request: Request) {
       upstreamHeaders['Range'] = rangeHeader;
     }
 
-    const upstreamResponse = await fetch(stream.url, {
-      headers: upstreamHeaders,
-    });
+    let upstreamResponse: Response;
+    try {
+      upstreamResponse = await fetch(stream.url, {
+        headers: upstreamHeaders,
+        signal: request.signal,
+      });
+
+      // Self-healing: if cached CDN URL has expired (403 Forbidden / 410 Gone), purge and re-resolve immediately
+      if (upstreamResponse.status === 403 || upstreamResponse.status === 410) {
+        console.warn(`[StreamRoute] Upstream URL expired (${upstreamResponse.status}) for ${videoId}. Purging cache and re-resolving fresh URL...`);
+        streamCache.delete(videoId);
+        try {
+          const freshStream = await resolveAudioStream(videoId, quality, true);
+          const retryResponse = await fetch(freshStream.url, {
+            headers: upstreamHeaders,
+            signal: request.signal,
+          });
+          if (retryResponse.ok || retryResponse.status === 206) {
+            upstreamResponse = retryResponse;
+          }
+        } catch (reResolveErr) {
+          console.warn(`[StreamRoute] Re-resolution failed for ${videoId}:`, reResolveErr);
+        }
+      }
+    } catch (fetchErr: any) {
+      console.warn(`[StreamRoute] Upstream fetch threw for ${videoId}, engaging on-the-fly pipe fallback:`, fetchErr?.message || fetchErr);
+      const progressivePipe = createYtDlpProgressiveStream(videoId, request.signal);
+      const pipeHeaders = new Headers();
+      pipeHeaders.set('Content-Type', progressivePipe.contentType);
+      pipeHeaders.set('Accept-Ranges', 'bytes');
+      pipeHeaders.set('Transfer-Encoding', 'chunked');
+      pipeHeaders.set('Cache-Control', 'no-cache');
+      pipeHeaders.set('Access-Control-Allow-Origin', '*');
+      pipeHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      pipeHeaders.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
+      pipeHeaders.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
+      pipeHeaders.set('X-Playback-Mode', 'progressive-ytdlp-pipe');
+      return new Response(progressivePipe.stream, {
+        status: 200,
+        headers: pipeHeaders,
+      });
+    }
 
     if (!upstreamResponse.ok && upstreamResponse.status !== 206) {
-      console.error(
-        `[StreamRoute] ❌ Upstream audio fetch returned status ${upstreamResponse.status} for id ${videoId}`
+      console.warn(
+        `[StreamRoute] Upstream fetch returned status ${upstreamResponse.status} for ${videoId}. Engaging on-the-fly yt-dlp pipe fallback.`
       );
-      return createErrorResponse(
-        `Sumber audio upstream mengembalikan status error (HTTP ${upstreamResponse.status})`,
-        upstreamResponse.status >= 500 ? 502 : upstreamResponse.status,
-        { upstreamStatus: upstreamResponse.status, videoId }
-      );
+      const progressivePipe = createYtDlpProgressiveStream(videoId, request.signal);
+      const pipeHeaders = new Headers();
+      pipeHeaders.set('Content-Type', progressivePipe.contentType);
+      pipeHeaders.set('Accept-Ranges', 'bytes');
+      pipeHeaders.set('Transfer-Encoding', 'chunked');
+      pipeHeaders.set('Cache-Control', 'no-cache');
+      pipeHeaders.set('Access-Control-Allow-Origin', '*');
+      pipeHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      pipeHeaders.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
+      pipeHeaders.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
+      pipeHeaders.set('X-Playback-Mode', 'progressive-ytdlp-pipe');
+      return new Response(progressivePipe.stream, {
+        status: 200,
+        headers: pipeHeaders,
+      });
     }
 
     const rawContentType = upstreamResponse.headers.get('content-type') || '';
     if (rawContentType.includes('text/html') || rawContentType.includes('application/json')) {
-      console.error(
-        `[StreamRoute] ❌ Upstream returned non-audio content-type "${rawContentType}" for id ${videoId}`
+      console.warn(
+        `[StreamRoute] Upstream returned non-audio content-type "${rawContentType}" for ${videoId}. Engaging on-the-fly yt-dlp pipe fallback.`
       );
-      return createErrorResponse(
-        'Sumber audio upstream mengembalikan respons bukan audio (URL kedaluwarsa atau bot check)',
-        502,
-        { upstreamContentType: rawContentType, videoId }
-      );
+      const progressivePipe = createYtDlpProgressiveStream(videoId, request.signal);
+      const pipeHeaders = new Headers();
+      pipeHeaders.set('Content-Type', progressivePipe.contentType);
+      pipeHeaders.set('Accept-Ranges', 'bytes');
+      pipeHeaders.set('Transfer-Encoding', 'chunked');
+      pipeHeaders.set('Cache-Control', 'no-cache');
+      pipeHeaders.set('Access-Control-Allow-Origin', '*');
+      pipeHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      pipeHeaders.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
+      pipeHeaders.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
+      pipeHeaders.set('X-Playback-Mode', 'progressive-ytdlp-pipe');
+      return new Response(progressivePipe.stream, {
+        status: 200,
+        headers: pipeHeaders,
+      });
     }
 
     if (!upstreamResponse.body) {
-      console.error(`[StreamRoute] ❌ Upstream audio stream body is null for id ${videoId}`);
-      return createErrorResponse(
-        'Data stream audio upstream tidak tersedia atau kosong',
-        502,
-        { videoId }
-      );
+      console.warn(`[StreamRoute] Upstream body is null for ${videoId}. Engaging on-the-fly yt-dlp pipe fallback.`);
+      const progressivePipe = createYtDlpProgressiveStream(videoId, request.signal);
+      const pipeHeaders = new Headers();
+      pipeHeaders.set('Content-Type', progressivePipe.contentType);
+      pipeHeaders.set('Accept-Ranges', 'bytes');
+      pipeHeaders.set('Transfer-Encoding', 'chunked');
+      pipeHeaders.set('Cache-Control', 'no-cache');
+      pipeHeaders.set('Access-Control-Allow-Origin', '*');
+      pipeHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      pipeHeaders.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
+      pipeHeaders.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
+      pipeHeaders.set('X-Playback-Mode', 'progressive-ytdlp-pipe');
+      return new Response(progressivePipe.stream, {
+        status: 200,
+        headers: pipeHeaders,
+      });
     }
 
     const responseHeaders = new Headers();
-    const contentType = rawContentType || 'audio/mp4';
+    const contentType = rawContentType || (stream.ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4');
     responseHeaders.set('Content-Type', contentType);
     responseHeaders.set('Accept-Ranges', 'bytes');
     responseHeaders.set('Cache-Control', 'public, max-age=14400, stale-while-revalidate=86400');
     responseHeaders.set('Access-Control-Allow-Origin', '*');
-    responseHeaders.set('X-Cache', 'PROXY-STREAM');
+    responseHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    responseHeaders.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
+    responseHeaders.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
+    responseHeaders.set('X-Playback-Mode', 'progressive-chunk');
+    responseHeaders.set('X-Cache', isMemCached ? 'MEM-PROXY' : 'PROGRESSIVE-PROXY');
     responseHeaders.set('X-RateLimit-Remaining', String(rateLimit.remaining));
     responseHeaders.set('X-Cookie-Active', cookieManager.getPoolStatus().currentActiveFilename || 'standard');
 
@@ -291,6 +372,9 @@ export async function HEAD(request: Request) {
     headers.set('X-Cache', 'HIT');
     headers.set('X-Audio-Source', 'vps-disk');
     headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
+    headers.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
     headers.set('X-RateLimit-Remaining', String(rateLimit.remaining));
     return new Response(null, { status: 200, headers });
   }
@@ -308,10 +392,26 @@ export async function HEAD(request: Request) {
     }
     headers.set('Cache-Control', 'public, max-age=14400');
     headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
+    headers.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type');
     headers.set('X-RateLimit-Remaining', String(rateLimit.remaining));
 
     return new Response(null, { status: 200, headers });
   } catch {
     return new Response(null, { status: 503, headers: { 'Retry-After': '3' } });
   }
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range, Content-Type, Accept, Authorization, X-Requested-With',
+      'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, Content-Type',
+      'Access-Control-Max-Age': '86400',
+    },
+  });
 }

@@ -1,0 +1,12 @@
+type: leaky
+name: musicfy/http-music-dos-protection
+description: "Tuned DoS protection allowing up to 120 burst requests for audio range chunks, while stopping malicious floods"
+filter: "evt.Meta.service in ['http', 'nginx'] && evt.Parsed.request startsWith '/api/'"
+groupby: "evt.Meta.source_ip"
+distinct: "evt.Parsed.request"
+capacity: 120
+leakspeed: "1s"
+blackhole: 1m
+labels:
+  type: http-dos
+  remediation: true

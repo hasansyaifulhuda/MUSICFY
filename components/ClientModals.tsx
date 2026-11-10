@@ -1,55 +1,51 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 
 const AddToPlaylistModal = dynamic(
-  () => import('@/components/AddToPlaylistModal').then((mod) => mod.AddToPlaylistModal),
-  { ssr: false }
+  () => import('@/components/AddToPlaylistModal').then((mod) => mod.AddToPlaylistModal || mod.default || mod),
+  { ssr: false, loading: () => null }
 );
 
 const ToastContainer = dynamic(
-  () => import('@/components/ToastContainer').then((mod) => mod.ToastContainer),
-  { ssr: false }
+  () => import('@/components/ToastContainer').then((mod) => mod.ToastContainer || mod.default || mod),
+  { ssr: false, loading: () => null }
 );
 
 const PWARegister = dynamic(
-  () => import('@/components/PWARegister').then((mod) => mod.PWARegister),
-  { ssr: false }
-);
-
-const ConsoleFilter = dynamic(
-  () => import('@/components/ConsoleFilter').then((mod) => mod.ConsoleFilter),
-  { ssr: false }
+  () => import('@/components/PWARegister').then((mod) => mod.PWARegister || mod.default || mod),
+  { ssr: false, loading: () => null }
 );
 
 const OfflineIndicator = dynamic(
-  () => import('@/components/OfflineIndicator').then((mod) => mod.OfflineIndicator),
-  { ssr: false }
+  () => import('@/components/OfflineIndicator').then((mod) => mod.OfflineIndicator || mod.default || mod),
+  { ssr: false, loading: () => null }
 );
 
 const SleepTimerModal = dynamic(
-  () => import('@/components/SleepTimerModal').then((mod) => mod.SleepTimerModal),
-  { ssr: false }
+  () => import('@/components/SleepTimerModal').then((mod) => mod.SleepTimerModal || mod.default || mod),
+  { ssr: false, loading: () => null }
 );
 
 const EqualizerModal = dynamic(
-  () => import('@/components/EqualizerModal').then((mod) => mod.EqualizerModal),
-  { ssr: false }
+  () => import('@/components/EqualizerModal').then((mod) => mod.EqualizerModal || mod.default || mod),
+  { ssr: false, loading: () => null }
 );
 
 const FloatingWidget = dynamic(
-  () => import('@/components/FloatingWidget').then((mod) => mod.FloatingWidget),
-  { ssr: false }
+  () => import('@/components/FloatingWidget').then((mod) => mod.FloatingWidget || mod.default || mod),
+  { ssr: false, loading: () => null }
 );
 
 const TrackContextMenu = dynamic(
-  () => import('@/components/TrackContextMenu').then((mod) => mod.TrackContextMenu),
-  { ssr: false }
+  () => import('@/components/TrackContextMenu').then((mod) => mod.TrackContextMenu || mod.default || mod),
+  { ssr: false, loading: () => null }
 );
 
 const DevDiagnosticModal = dynamic(
-  () => import('@/components/DevDiagnosticModal').then((mod) => mod.DevDiagnosticModal),
-  { ssr: false }
+  () => import('@/components/DevDiagnosticModal').then((mod) => mod.DevDiagnosticModal || mod.default || mod),
+  { ssr: false, loading: () => null }
 );
 
 import { ComponentErrorBoundary } from '@/components/ComponentErrorBoundary';
@@ -61,6 +57,12 @@ import { useDevModalStore } from '@/lib/devModalStore';
 import { useFloatingWidgetStore } from '@/lib/floatingWidgetStore';
 
 export function ClientModals() {
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
   const hasTrackToAdd = usePlayerStore((state) => state.trackToAdd !== null);
   const isEqualizerOpen = useEqualizerStore((state) => state.isModalOpen);
   const isSleepTimerOpen = useSleepTimerStore((state) => state.isModalOpen);
@@ -74,10 +76,12 @@ export function ClientModals() {
 
   const showFloatingWidget = Boolean(isWidgetEnabled && isWidgetOpen && hasCurrentTrack && !isPlayerExpanded);
 
+  if (!isMounted) {
+    return null;
+  }
+
   return (
     <>
-      <ConsoleFilter />
-
       {hasTrackToAdd && (
         <ComponentErrorBoundary fallbackTitle="Playlist Modal">
           <AddToPlaylistModal />
@@ -120,3 +124,6 @@ export function ClientModals() {
     </>
   );
 }
+
+export default ClientModals;
+

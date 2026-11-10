@@ -36,6 +36,13 @@ export function getFastCachedLyrics(videoId: string): CachedLyrics | null {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && Array.isArray(parsed.lyrics) && parsed.lyrics.length > 0) {
+          // Purge and ignore deprecated fake AI-generated timestamps
+          if (parsed.provider === 'gemini-ai') {
+            try {
+              localStorage.removeItem(`${LOCAL_STORAGE_PREFIX}${videoId}`);
+            } catch {}
+            return null;
+          }
           const item: CachedLyrics = {
             lyrics: parsed.lyrics,
             synced: Boolean(parsed.synced),
@@ -83,6 +90,11 @@ export async function getDeepCachedLyrics(videoId: string): Promise<CachedLyrics
     // 2. Check Compressed Metadata Cache in IndexedDB
     const cached = await db.getMetadataCache<CachedLyrics>(`lyrics:${videoId}`);
     if (cached && Array.isArray(cached.lyrics) && cached.lyrics.length > 0) {
+      // Purge and ignore deprecated fake AI-generated timestamps from IDB
+      if (cached.provider === 'gemini-ai') {
+        db.deleteMetadataCache(`lyrics:${videoId}`).catch(() => {});
+        return null;
+      }
       saveFastCachedLyrics(videoId, cached.lyrics, Boolean(cached.synced), cached.provider);
       return cached;
     }

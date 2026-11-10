@@ -89,14 +89,14 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
 
   if (!playlist) return null;
 
-  const handlePlay = (e: React.MouseEvent) => {
+  const handlePlay = (e: React.MouseEvent | React.PointerEvent) => {
     e.stopPropagation();
     if (playlist.videos && playlist.videos.length > 0) {
       playTrack(playlist.videos[0], playlist.videos, 'playlist');
     }
   };
 
-  const handleAdd = async (e: React.MouseEvent) => {
+  const handleAdd = async (e: React.MouseEvent | React.PointerEvent) => {
     e.stopPropagation();
     if (!added) {
       await db.addPlaylist({
@@ -109,7 +109,7 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
     }
   };
 
-  const handleRadio = (e: React.MouseEvent) => {
+  const handleRadio = (e: React.MouseEvent | React.PointerEvent) => {
     e.stopPropagation();
     if (playlist.videos && playlist.videos.length > 0) {
       playTrack(playlist.videos[0], [], 'similar');
@@ -124,13 +124,21 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
 
   return (
     <div
+      onPointerDown={(e) => {
+        if (e.button === 0) handleClick();
+      }}
       onClick={handleClick}
       onMouseEnter={() => prefetchNavigation(router, `/playlist/${playlist.playlistId}`, 'playlist', playlist.playlistId)}
       onTouchStart={() => prefetchNavigation(router, `/playlist/${playlist.playlistId}`, 'playlist', playlist.playlistId)}
-      className="w-[300px] md:w-[320px] bg-[#181818]/80 hover:bg-[#282828] rounded-2xl p-4 shrink-0 snap-start cursor-pointer transition-all duration-300 flex flex-col border border-white/5 shadow-lg group select-none"
+      style={{
+        touchAction: 'manipulation',
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+      className="w-[300px] md:w-[320px] bg-white/[0.04] hover:bg-white/[0.08] backdrop-blur-xl rounded-2xl p-4 shrink-0 snap-start cursor-pointer transition-all duration-300 flex flex-col border border-white/[0.06] hover:border-white/[0.14] shadow-lg group select-none gpu-accelerated"
     >
       <div className="flex gap-3.5 mb-4">
-        <div className="w-20 h-20 rounded-xl overflow-hidden relative shrink-0 shadow-md bg-black/40">
+        <div className="w-20 h-20 rounded-xl overflow-hidden relative shrink-0 shadow-md bg-black/40 border border-white/5">
           {playlist.videos && playlist.videos.length >= 4 ? (
             <div className="grid grid-cols-2 grid-rows-2 w-full h-full">
               {playlist.videos.slice(0, 4).map((track, i) => (
@@ -167,8 +175,8 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
 
       <div className="flex-1 space-y-2.5 mb-4">
         {displayTracks.map((track, i) => (
-          <div key={i} className="flex items-center gap-2.5 p-1 rounded-lg hover:bg-white/5 transition-colors">
-            <div className="w-9 h-9 rounded-md overflow-hidden relative shrink-0 bg-white/5">
+          <div key={i} className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-white/[0.06] transition-colors">
+            <div className="w-9 h-9 rounded-lg overflow-hidden relative shrink-0 bg-white/5 border border-white/5">
               <Image
                 src={track.thumbnails?.[track.thumbnails.length - 1]?.url || 'https://picsum.photos/60/60'}
                 alt={track.name}
@@ -189,17 +197,25 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
         ))}
       </div>
 
-      <div className="flex items-center justify-between mt-auto pt-2 border-t border-white/5">
+      <div className="flex items-center justify-between mt-auto pt-2.5 border-t border-white/5">
         <div className="flex items-center gap-2">
           <button
+            onPointerDown={(e) => {
+              if (e.button === 0) handlePlay(e);
+            }}
             onClick={handlePlay}
-            className="w-11 h-11 bg-[#1DB954] hover:bg-[#1ed760] text-black rounded-full flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-md cursor-pointer"
+            style={{ touchAction: 'manipulation' }}
+            className="w-11 h-11 bg-[#1DB954] hover:bg-[#1ed760] text-black rounded-full flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-md shadow-[#1DB954]/25 cursor-pointer"
             title="Putar Playlist"
           >
             <Play className="w-5 h-5 fill-current ml-0.5" />
           </button>
           <button
+            onPointerDown={(e) => {
+              if (e.button === 0) handleRadio(e);
+            }}
             onClick={handleRadio}
+            style={{ touchAction: 'manipulation' }}
             className="w-9 h-9 bg-white/10 hover:bg-white/20 text-white rounded-full flex items-center justify-center transition-colors cursor-pointer"
             title="Mulai Radio"
           >
@@ -207,7 +223,11 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
           </button>
         </div>
         <button
+          onPointerDown={(e) => {
+            if (e.button === 0) handleAdd(e);
+          }}
           onClick={handleAdd}
+          style={{ touchAction: 'manipulation' }}
           className="w-9 h-9 bg-white/10 hover:bg-white/20 text-white rounded-full flex items-center justify-center transition-colors cursor-pointer"
           title={added ? 'Tersimpan di Koleksi' : 'Simpan ke Koleksi'}
         >

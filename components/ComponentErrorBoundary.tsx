@@ -16,7 +16,7 @@ interface State {
 }
 
 /**
- * ComponentErrorBoundary (Poin 94: Granular Component-Level Error Isolation)
+ * ComponentErrorBoundary (Granular Component-Level Error Isolation)
  * Prevents unhandled subcomponent errors from propagating up and breaking the entire page or player.
  */
 export class ComponentErrorBoundary extends Component<Props, State> {
@@ -69,3 +69,6 @@ export class ComponentErrorBoundary extends Component<Props, State> {
     return this.props.children;
   }
 }
+
+export default ComponentErrorBoundary;
+

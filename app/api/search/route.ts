@@ -3,6 +3,7 @@ import { searchLimiter, getClientIp, createRateLimitResponse } from '@/lib/rateL
 import { createErrorResponse, createSuccessResponse } from '@/lib/apiResponse';
 import { cookieManager } from '@/lib/cookieRotator';
 import { ytmusicClient } from '@/lib/ytmusicClient';
+import { meilisearch } from '@/lib/meilisearch';
 
 export const dynamic = 'force-dynamic';
 
@@ -100,6 +101,27 @@ export async function GET(request: Request) {
   const cacheKey = `${type}:${cleanQuery.toLowerCase()}`;
 
   try {
+    // -------------------------------------------------------------
+    // Tier 0: Meilisearch Ultra-Fast Local Index (<50ms with typo tolerance)
+    // -------------------------------------------------------------
+    let meiliResults: any[] | null = null;
+    try {
+      meiliResults = await meilisearch.searchTracks(cleanQuery, { type, limit: 30 });
+    } catch {}
+
+    if (Array.isArray(meiliResults) && meiliResults.length >= 6) {
+      return createSuccessResponse(
+        meiliResults,
+        'Hasil pencarian berhasil didapatkan via Meilisearch',
+        200,
+        {
+          'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+          'X-Search-Engine': 'meilisearch-turbo',
+          'X-RateLimit-Remaining': String(rateLimit.remaining),
+        }
+      );
+    }
+
     const data = await searchCache.getOrFetch(cacheKey, async () => {
       // -------------------------------------------------------------
       // Tier 1: YouTube Music API (Resilient Singleton & Circuit Breaker)
@@ -127,6 +149,8 @@ export async function GET(request: Request) {
       }
 
       if (Array.isArray(ytResults) && ytResults.length > 0) {
+        // Asynchronously index discovered tracks into Meilisearch
+        meilisearch.indexTracks(ytResults).catch(() => {});
         return ytResults;
       }
 
@@ -135,16 +159,26 @@ export async function GET(request: Request) {
       // -------------------------------------------------------------
       console.info(`[SearchRoute] Triggering Tier 2 iTunes fallback for query "${cleanQuery}"...`);
       const itunesResults = await searchItunesCatalog(cleanQuery, type);
+      if (Array.isArray(itunesResults) && itunesResults.length > 0) {
+        meilisearch.indexTracks(itunesResults).catch(() => {});
+      }
       return itunesResults;
     });
 
+    let finalResults = data;
+    if (Array.isArray(meiliResults) && meiliResults.length > 0 && Array.isArray(data)) {
+      const existingIds = new Set(data.map((d: any) => d.videoId || d.id));
+      const extraFromMeili = meiliResults.filter((m) => !existingIds.has(m.videoId));
+      finalResults = [...data, ...extraFromMeili];
+    }
+
     const activeCookie = cookieManager.trackSearchUsage();
     return createSuccessResponse(
-      data,
+      finalResults,
       'Hasil pencarian berhasil didapatkan',
       200,
       {
-        'Cache-Control': 'public, s-maxage=7200, stale-while-revalidate=86400',
+        'Cache-Control': 'public, max-age=1800, s-maxage=7200, stale-while-revalidate=86400',
         'X-RateLimit-Remaining': String(rateLimit.remaining),
         'X-Cookie-Active': activeCookie ? activeCookie.split('/').pop() || 'active' : 'fallback-standard',
       }

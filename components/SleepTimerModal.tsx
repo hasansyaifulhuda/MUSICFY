@@ -53,10 +53,13 @@ export function SleepTimerModal() {
       onClick={closeModal}
     >
       <div
-        className="relative w-full max-w-sm bg-[#181818] border border-white/10 rounded-2xl p-6 shadow-2xl flex flex-col text-white transform-gpu"
+        className="relative w-full max-w-sm glass-panel border border-white/15 rounded-3xl p-6 shadow-2xl flex flex-col text-white transform-gpu gpu-accelerated"
         onClick={(e) => e.stopPropagation()}
+        style={{
+          transform: 'translate3d(0, 0, 0)',
+          willChange: 'transform',
+        }}
       >
-        {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-white/10">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-full bg-[#1DB954]/20 flex items-center justify-center text-[#1DB954]">
@@ -65,7 +68,11 @@ export function SleepTimerModal() {
             <h3 className="text-lg font-bold tracking-tight">Pengatur Waktu Tidur</h3>
           </div>
           <button
+            onPointerDown={(e) => {
+              if (e.button === 0) closeModal();
+            }}
             onClick={closeModal}
+            style={{ touchAction: 'manipulation' }}
             className="p-1 text-white/60 hover:text-white rounded-full hover:bg-white/10 transition cursor-pointer"
             aria-label="Tutup"
           >
@@ -169,3 +176,6 @@ export function SleepTimerModal() {
     </div>
   );
 }
+
+export default SleepTimerModal;
+

@@ -1,18 +1,31 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import { usePathname } from 'next/navigation';
 
 /**
  * Dynamically Chunked Client Player Component
- * Master Blueprint PMUSIC Architecture - Phase 1.1 (Point 1)
  *
  * Loaded on demand exclusively on the client side ({ ssr: false }),
  * preventing the 42KB audio engine & player state bundle from blocking initial SSR.
+ * Automatically hidden inside /admin routes to give full screen to Admin Dashboard.
  */
-export const ClientPlayer = dynamic(
-  () => import('@/components/Player').then((mod) => mod.Player),
+const DynamicPlayer = dynamic(
+  () => import('@/components/Player'),
   {
     ssr: false,
     loading: () => null,
   }
 );
+
+export function ClientPlayer() {
+  const pathname = usePathname();
+
+  if (pathname?.startsWith('/admin')) {
+    return null;
+  }
+
+  return <DynamicPlayer />;
+}
+
+export default ClientPlayer;

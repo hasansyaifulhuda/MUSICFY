@@ -121,3 +121,6 @@ export const DevDiagnosticModal = memo(function DevDiagnosticModal() {
     </div>
   );
 });
+
+export default DevDiagnosticModal;
+

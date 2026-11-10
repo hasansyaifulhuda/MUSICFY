@@ -41,10 +41,13 @@ export function EqualizerModal() {
       onClick={closeModal}
     >
       <div
-        className="relative w-full max-w-lg bg-[#181818] border border-white/10 rounded-2xl p-6 shadow-2xl flex flex-col text-white max-h-[90vh] overflow-y-auto no-scrollbar transform-gpu"
+        className="relative w-full max-w-lg glass-panel border border-white/15 rounded-3xl p-6 shadow-2xl flex flex-col text-white max-h-[90vh] overflow-y-auto no-scrollbar transform-gpu gpu-accelerated"
         onClick={(e) => e.stopPropagation()}
+        style={{
+          transform: 'translate3d(0, 0, 0)',
+          willChange: 'transform',
+        }}
       >
-        {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-white/10">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-full bg-[#1DB954]/20 flex items-center justify-center text-[#1DB954]">
@@ -56,7 +59,11 @@ export function EqualizerModal() {
             </div>
           </div>
           <button
+            onPointerDown={(e) => {
+              if (e.button === 0) closeModal();
+            }}
             onClick={closeModal}
+            style={{ touchAction: 'manipulation' }}
             className="p-1.5 text-white/60 hover:text-white rounded-full hover:bg-white/10 transition cursor-pointer"
             aria-label="Tutup"
           >
@@ -144,7 +151,7 @@ export function EqualizerModal() {
           />
         </div>
 
-        {/* Spatial / 3D Audio & Reverb DSP Filters (Batch 3 - Poin 73) */}
+        {/* Spatial / 3D Audio & Reverb DSP Filters */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
           {/* Spatial 3D Surround */}
           <div className="p-3.5 bg-white/5 rounded-xl border border-white/5 flex items-center justify-between">
@@ -269,3 +276,6 @@ export function EqualizerModal() {
     </div>
   );
 }
+
+export default EqualizerModal;
+

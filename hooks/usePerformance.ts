@@ -4,7 +4,6 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 
 /**
  * Hook to debounce a rapidly changing state or value (e.g. search input or window dimensions).
- * Master Blueprint PMUSIC Architecture - Phase 1.2 (Point 8)
  */
 export function useDebounce<T>(value: T, delay: number): T {
   const [debouncedValue, setDebouncedValue] = useState<T>(value);

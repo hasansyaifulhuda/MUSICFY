@@ -54,6 +54,10 @@ public class MediaSessionBridge {
         return instance;
     }
 
+    public boolean isPlaying() {
+        return this.isPlaying;
+    }
+
     private final Activity activity;
     private final WebView webView;
     private final NotificationManager notificationManager;
@@ -133,33 +137,59 @@ public class MediaSessionBridge {
         public void onAudioFocusChange(int focusChange) {
             switch (focusChange) {
                 case AudioManager.AUDIOFOCUS_LOSS:
-                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                    // Ignore transient focus loss during early playback (< 2s) to prevent race conditions with WebView HTML5 <audio>
-                    if (System.currentTimeMillis() - playbackStartTimeMs < 2000) {
-                        break;
-                    }
+                    // Only pause on permanent total loss
                     dispatchAction("pause");
                     break;
+                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                    // Short notification or transient interruption: keep music flowing
+                    break;
                 case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                    // Game sound effects or navigation alert: Duck volume smoothly without crashing
-                    dispatchAction("duckVolume", 0.4);
+                    // Dual Audio: Game sound effects (e.g. Mobile Legends) play simultaneously without stopping music
                     break;
                 case AudioManager.AUDIOFOCUS_GAIN:
-                    // Regained audio focus after interruption
                     dispatchAction("restoreVolume");
-                    dispatchAction("play");
                     break;
             }
         }
     };
 
+    /**
+     * Native Android Dual Audio & Audio Focus Configuration:
+     * Uses AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK and setWillPauseWhenDucked(false)
+     * so MusicFY music and in-game SFX (e.g. Mobile Legends) play concurrently without silencing each other.
+     */
     @JavascriptInterface
     public synchronized boolean requestAudioFocus() {
-        // WebView HTML5 <audio> manages its own primary audio focus directly with Android OS.
-        // We do NOT aggressively request AUDIOFOCUS_GAIN from native to avoid stealing
-        // focus from Chromium WebView HTML5 <audio> or triggering unwanted focus loss callbacks.
-        hasAudioFocus = true;
-        return true;
+        if (audioManager == null) return false;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                AudioAttributes playbackAttributes = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build();
+
+                audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                        .setAudioAttributes(playbackAttributes)
+                        .setAcceptsDelayedFocusGain(true)
+                        .setWillPauseWhenDucked(false)
+                        .setOnAudioFocusChangeListener(focusChangeListener)
+                        .build();
+
+                int res = audioManager.requestAudioFocus(audioFocusRequest);
+                hasAudioFocus = (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
+            } else {
+                int res = audioManager.requestAudioFocus(
+                        focusChangeListener,
+                        AudioManager.STREAM_MUSIC,
+                        AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                );
+                hasAudioFocus = (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
+            }
+            return hasAudioFocus;
+        } catch (Exception e) {
+            hasAudioFocus = true;
+            return true;
+        }
     }
 
     @JavascriptInterface

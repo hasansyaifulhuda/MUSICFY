@@ -1,7 +1,12 @@
 import { spawn } from 'child_process';
+import { Readable } from 'stream';
 import path from 'path';
 import fs from 'fs';
 import { streamCache } from '@/lib/cache';
+import { getYtDlpHeaderArgs, getRandomBrowserProfile } from '@/lib/stealthHeaders';
+import { streamQueue, QueuePriority } from '@/lib/requestQueue';
+import { retryWithBackoff, isRetryableError } from '@/lib/retry';
+import { COOKIE_INVALID_PATTERNS, isCookieError, cookieRotator } from '@/lib/cookieRotator';
 
 export interface ResolvedAudioStream {
   videoId: string;
@@ -32,20 +37,6 @@ export const cookieHealthState: CookieHealthStatus = {
   lastWarning: null,
 };
 
-// Patterns indicating YouTube has rejected or flagged the cookies file
-const COOKIE_INVALID_PATTERNS = [
-  /Sign in to confirm you(?:'|’)?re not a bot/i,
-  /Sign in to confirm your age/i,
-  /cookies are invalid/i,
-  /Netscape cookie file/i,
-  /Cookie file contains invalid line/i,
-  /Private video\. Sign in/i,
-  /Use --cookies-from-browser or --cookies/i,
-  /HTTP Error 401/i,
-  /Your account has been terminated/i,
-  /login.*required/i,
-];
-
 // Curated rotation pool of realistic desktop browser User-Agents (Chrome 131+, Safari 18, Firefox 133, Edge 131)
 const STEALTH_USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -66,7 +57,19 @@ export function getRandomStealthUserAgent(): string {
  */
 function getExtendedEnv(): NodeJS.ProcessEnv {
   const home = process.env.HOME || '/root';
+  const customBinDirs: string[] = [];
+  if (process.env.FFMPEG_PATH) {
+    customBinDirs.push(path.dirname(process.env.FFMPEG_PATH));
+  }
+  if (process.env.DENO_PATH) {
+    customBinDirs.push(path.dirname(process.env.DENO_PATH));
+  }
+  if (process.env.YTDLP_PATH && process.env.YTDLP_PATH !== 'yt-dlp') {
+    customBinDirs.push(path.dirname(process.env.YTDLP_PATH));
+  }
+
   const binPaths = [
+    ...customBinDirs,
     path.join(home, '.local', 'bin'),
     path.join(home, '.deno', 'bin'),
     '/usr/local/bin',
@@ -85,13 +88,23 @@ function getExtendedEnv(): NodeJS.ProcessEnv {
 }
 
 /**
- * Locates the yt-dlp executable path.
+ * Locates the yt-dlp executable path, honoring process.env.YTDLP_PATH if configured.
  */
-function findYtDlpBinary(): string {
+export function findYtDlpBinary(): string {
+  if (process.env.YTDLP_PATH) {
+    const custom = process.env.YTDLP_PATH.trim();
+    if (custom === 'yt-dlp') return 'yt-dlp';
+    try {
+      if (fs.existsSync(custom) && fs.statSync(custom).isFile()) {
+        return custom;
+      }
+    } catch {}
+  }
+
   const home = process.env.HOME || '/root';
   const candidates = [
     path.join(home, '.local', 'bin', 'yt-dlp'),
-    '/usr/local/bin',
+    '/usr/local/bin/yt-dlp',
     '/usr/bin/yt-dlp',
     'yt-dlp',
   ];
@@ -355,8 +368,6 @@ try {
   logStartupCookieDiagnostic();
 } catch {}
 
-import { cookieRotator } from '@/lib/cookieRotator';
-
 /**
  * Safely retrieves the next active cookie file using multi-cookie round-robin rotation.
  * Checks cookies1.txt - cookies5.txt and falls back to cookies.txt.
@@ -416,104 +427,111 @@ const defaultResolverTimeoutMs = (() => {
  */
 function runYtDlpProcess(
   args: string[],
-  timeoutMs = defaultResolverTimeoutMs
+  timeoutMs = defaultResolverTimeoutMs,
+  resourceKey = ''
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolve, reject) => {
-    const startTime = Date.now();
-    const ytDlpBin = findYtDlpBinary();
-    const env = getExtendedEnv();
+  const execute = () =>
+    new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
+      const startTime = Date.now();
+      const ytDlpBin = findYtDlpBinary();
+      const env = getExtendedEnv();
 
-    const child = spawn(ytDlpBin, args, {
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+      const child = spawn(ytDlpBin, args, {
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
 
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const MAX_BUFFER = 5 * 1024 * 1024; // 5MB buffer cap
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      const MAX_BUFFER = 5 * 1024 * 1024; // 5MB buffer cap
 
-    let timer: NodeJS.Timeout | null = null;
-    if (timeoutMs > 0) {
-      timer = setTimeout(() => {
+      let timer: NodeJS.Timeout | null = null;
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            const elapsed = Date.now() - startTime;
+            console.error(
+              `[AudioResolver] ⏱️ TIMEOUT: yt-dlp stream resolution exceeded ${timeoutMs}ms (elapsed: ${elapsed}ms) for PID ${child.pid}!\n` +
+              `Binary: ${ytDlpBin}\n` +
+              `Args: ${args.slice(0, 8).join(' ')} ...\n` +
+              `Stderr snapshot at timeout:\n${stderr.trim() || '(no stderr produced)'}`
+            );
+
+            try {
+              child.stdout?.removeAllListeners();
+              child.stderr?.removeAllListeners();
+            } catch {}
+
+            try {
+              child.kill('SIGTERM');
+              const forceKillTimer = setTimeout(() => {
+                try {
+                  if (!child.killed) {
+                    child.kill('SIGKILL');
+                  }
+                } catch {}
+              }, 1000);
+              if (forceKillTimer.unref) forceKillTimer.unref();
+            } catch {}
+
+            const timeoutError: any = new Error(`yt-dlp execution timed out after ${timeoutMs}ms (elapsed: ${elapsed}ms)`);
+            timeoutError.code = 'ETIMEDOUT';
+            timeoutError.stderr = stderr;
+            timeoutError.stdout = stdout;
+            reject(timeoutError);
+          }
+        }, timeoutMs);
+      }
+
+      child.stdout.on('data', (chunk) => {
+        if (stdout.length < MAX_BUFFER) {
+          stdout += chunk.toString();
+        }
+      });
+
+      child.stderr.on('data', (chunk) => {
+        if (stderr.length < MAX_BUFFER) {
+          stderr += chunk.toString();
+        }
+      });
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        try {
+          child.stdout?.removeAllListeners();
+          child.stderr?.removeAllListeners();
+          child.removeAllListeners();
+        } catch {}
+      };
+
+      child.on('error', (err: any) => {
         if (!settled) {
           settled = true;
-          const elapsed = Date.now() - startTime;
+          cleanup();
           console.error(
-            `[AudioResolver] ⏱️ TIMEOUT: yt-dlp stream resolution exceeded ${timeoutMs}ms (elapsed: ${elapsed}ms) for PID ${child.pid}!\n` +
-            `Binary: ${ytDlpBin}\n` +
-            `Args: ${args.slice(0, 8).join(' ')} ...\n` +
-            `Stderr snapshot at timeout:\n${stderr.trim() || '(no stderr produced)'}`
+            `[AudioResolver] ❌ Error spawning yt-dlp binary "${ytDlpBin}": ${err.message}\n` +
+            (stderr.trim() ? `Stderr:\n${stderr.trim()}` : '')
           );
-
-          try {
-            child.stdout?.removeAllListeners();
-            child.stderr?.removeAllListeners();
-          } catch {}
-
-          try {
-            child.kill('SIGTERM');
-            const forceKillTimer = setTimeout(() => {
-              try {
-                if (!child.killed) {
-                  child.kill('SIGKILL');
-                }
-              } catch {}
-            }, 1000);
-            if (forceKillTimer.unref) forceKillTimer.unref();
-          } catch {}
-
-          const timeoutError: any = new Error(`yt-dlp execution timed out after ${timeoutMs}ms (elapsed: ${elapsed}ms)`);
-          timeoutError.code = 'ETIMEDOUT';
-          timeoutError.stderr = stderr;
-          timeoutError.stdout = stdout;
-          reject(timeoutError);
+          err.stderr = stderr;
+          err.stdout = stdout;
+          reject(err);
         }
-      }, timeoutMs);
-    }
+      });
 
-    child.stdout.on('data', (chunk) => {
-      if (stdout.length < MAX_BUFFER) {
-        stdout += chunk.toString();
-      }
+      child.on('close', (code) => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          resolve({ stdout, stderr, code });
+        }
+      });
     });
 
-    child.stderr.on('data', (chunk) => {
-      if (stderr.length < MAX_BUFFER) {
-        stderr += chunk.toString();
-      }
-    });
-
-    const cleanup = () => {
-      if (timer) clearTimeout(timer);
-      try {
-        child.stdout?.removeAllListeners();
-        child.stderr?.removeAllListeners();
-        child.removeAllListeners();
-      } catch {}
-    };
-
-    child.on('error', (err: any) => {
-      if (!settled) {
-        settled = true;
-        cleanup();
-        console.error(
-          `[AudioResolver] ❌ Error spawning yt-dlp binary "${ytDlpBin}": ${err.message}\n` +
-          (stderr.trim() ? `Stderr:\n${stderr.trim()}` : '')
-        );
-        err.stderr = stderr;
-        err.stdout = stdout;
-        reject(err);
-      }
-    });
-
-    child.on('close', (code) => {
-      if (!settled) {
-        settled = true;
-        cleanup();
-        resolve({ stdout, stderr, code });
-      }
-    });
+  return streamQueue.enqueue(resourceKey, execute, {
+    priority: QueuePriority.STREAM,
+    timeoutMs: timeoutMs > 0 ? timeoutMs + 15000 : 120000,
   });
 }
 
@@ -555,7 +573,8 @@ async function resolveItunesToQuery(itunesId: string): Promise<string | null> {
  */
 export async function resolveAudioStream(
   videoIdOrUrl: string,
-  quality: string = 'auto'
+  quality: string = 'auto',
+  forceFresh: boolean = false
 ): Promise<ResolvedAudioStream> {
   const rawId = sanitizeVideoId(videoIdOrUrl);
   if (!rawId) {
@@ -564,6 +583,10 @@ export async function resolveAudioStream(
 
   // 1. In-Memory Cache Lookup with Quality Differentiation
   const cacheKey = quality && quality !== 'auto' ? `${rawId}:${quality}` : rawId;
+  if (forceFresh) {
+    streamCache.delete(cacheKey);
+    streamCache.delete(rawId);
+  }
   return await streamCache.getOrFetch(cacheKey, async () => {
     let targetArg: string;
     let actualVideoId = rawId;
@@ -588,88 +611,111 @@ export async function resolveAudioStream(
     const stealthUserAgent = getRandomStealthUserAgent();
 
     // -------------------------------------------------------------
-    // Attempt 1: Stealth yt-dlp with cookies.txt & UA spoofing
+    // Attempt 1: Multi-Cookie Rotation & Failover with yt-dlp
+    // Iterates through healthy cookies (cookies.txt, cookies1.txt, cookies2.txt, etc.)
+    // If one cookie fails or hits bot detection, immediately tries the next cookie!
     // -------------------------------------------------------------
-    let attempt1FailedDueToCookies = false;
+    const candidateCookiePaths = cookieRotator.getHealthyCookiePaths();
 
-    if (cookiesPath) {
-      const primaryArgs = [
-        '--no-warnings',
-        '--no-playlist',
-        '--no-check-certificates',
-        '--socket-timeout',
-        '30',
-        '--user-agent',
-        stealthUserAgent,
-        '--add-header',
-        'Accept-Language:en-US,en;q=0.9,id;q=0.8',
-        '--add-header',
-        'Sec-Fetch-Mode:navigate',
-        '--remote-components',
-        'ejs:github',
-        '-f',
-        baseAudioFormat,
-        '-j',
-        '--cookies',
-        cookiesPath,
-        targetArg,
-      ];
+    if (candidateCookiePaths.length > 0) {
+      const maxCookieAttempts = Math.min(candidateCookiePaths.length, 4);
 
-      try {
-        const res = await runYtDlpProcess(primaryArgs, defaultResolverTimeoutMs);
-        if (res.code === 0 && res.stdout.trim()) {
-          const metadata = JSON.parse(res.stdout);
-          if (metadata.url) {
-            cookieHealthState.isValid = true;
-            cookieHealthState.lastChecked = Date.now();
-            cookieRotator.reportCookieSuccess(cookiesPath);
+      for (let attemptIdx = 0; attemptIdx < maxCookieAttempts; attemptIdx++) {
+        const currentCookiePath = candidateCookiePaths[attemptIdx];
+        const cookieFileName = path.basename(currentCookiePath);
+        let attemptFailedDueToCookies = false;
 
-            actualVideoId = metadata.id || actualVideoId;
-            const result: ResolvedAudioStream = {
-              videoId: actualVideoId,
-              url: metadata.url,
-              title: metadata.title || 'Unknown Track',
-              duration: metadata.duration,
-              ext: metadata.ext || 'm4a',
-              acodec: metadata.acodec,
-              abr: metadata.abr,
-              filesize: metadata.filesize || metadata.filesize_approx,
-              httpHeaders: metadata.http_headers || {
-                'User-Agent': stealthUserAgent,
-                Accept: '*/*',
-              },
-              cached: false,
-            };
+        const primaryHeaderArgs = getYtDlpHeaderArgs();
+        const primaryArgs = [
+          '--no-warnings',
+          '--no-playlist',
+          '--no-check-certificates',
+          '--socket-timeout',
+          '30',
+          ...primaryHeaderArgs,
+          '--remote-components',
+          'ejs:github',
+          '-f',
+          baseAudioFormat,
+          '-j',
+          '--cookies',
+          currentCookiePath,
+          targetArg,
+        ];
 
-            if (rawId !== actualVideoId) {
-              streamCache.set(actualVideoId, result);
-            }
-
-            return result;
-          }
-        }
-
-        // Check if stderr contains cookie invalidation/expiration signatures
-        for (const pattern of COOKIE_INVALID_PATTERNS) {
-          if (pattern.test(res.stderr)) {
-            attempt1FailedDueToCookies = true;
-            cookieRotator.reportCookieFailure(cookiesPath, res.stderr.slice(0, 150));
-            logCookieWarningBanner(res.stderr.slice(0, 150));
-            break;
-          }
-        }
-
-        if (!attempt1FailedDueToCookies) {
-          console.error(
-            `[AudioResolver] ❌ Primary yt-dlp attempt failed (code ${res.code}) for "${actualVideoId}":\n` +
-            `Stderr Output:\n${res.stderr.trim() || '(no stderr produced)'}`
+        try {
+          console.info(
+            `[AudioResolver] 🎧 Resolving audio for ${actualVideoId} using cookie "${cookieFileName}" (Attempt ${attemptIdx + 1}/${maxCookieAttempts})...`
           );
+
+          const res = await retryWithBackoff(
+            () => runYtDlpProcess(primaryArgs, defaultResolverTimeoutMs, `stream:${actualVideoId}`),
+            {
+              maxRetries: 1,
+              initialDelayMs: 400,
+              shouldRetry: (err) => isRetryableError(err) && !attemptFailedDueToCookies,
+            }
+          );
+
+          if (res.code === 0 && res.stdout.trim()) {
+            const metadata = JSON.parse(res.stdout);
+            if (metadata.url) {
+              cookieHealthState.isValid = true;
+              cookieHealthState.lastChecked = Date.now();
+              cookieRotator.reportCookieSuccess(currentCookiePath);
+
+              actualVideoId = metadata.id || actualVideoId;
+              const result: ResolvedAudioStream = {
+                videoId: actualVideoId,
+                url: metadata.url,
+                title: metadata.title || 'Unknown Track',
+                duration: metadata.duration,
+                ext: metadata.ext || 'm4a',
+                acodec: metadata.acodec,
+                abr: metadata.abr,
+                filesize: metadata.filesize || metadata.filesize_approx,
+                httpHeaders: metadata.http_headers || {
+                  'User-Agent': stealthUserAgent,
+                  Accept: '*/*',
+                },
+                cached: false,
+              };
+
+              if (rawId !== actualVideoId) {
+                streamCache.set(actualVideoId, result);
+              }
+
+              return result;
+            }
+          }
+
+          // Check if stderr contains cookie invalidation/expiration signatures
+          for (const pattern of COOKIE_INVALID_PATTERNS) {
+            if (pattern.test(res.stderr)) {
+              attemptFailedDueToCookies = true;
+              cookieRotator.reportCookieFailure(currentCookiePath, res.stderr);
+              break;
+            }
+          }
+
+          if (attemptFailedDueToCookies) {
+            console.warn(
+              `[AudioResolver] ⚠️ Cookie "${cookieFileName}" ditolak/invalid. Beralih ke cookie berikutnya dalam daftar...`
+            );
+            continue;
+          } else {
+            console.warn(
+              `[AudioResolver] ⚠️ Primary yt-dlp attempt failed with cookie "${cookieFileName}" (code ${res.code}). Mencoba cookie berikutnya...`
+            );
+            continue;
+          }
+        } catch (err: any) {
+          console.warn(
+            `[AudioResolver] ⚠️ Error with cookie "${cookieFileName}" for "${actualVideoId}": ${err?.message || err}. Mencoba cookie berikutnya...`
+          );
+          cookieRotator.reportCookieFailure(currentCookiePath, err?.message || 'Exception');
+          continue;
         }
-      } catch (err: any) {
-        console.error(
-          `[AudioResolver] ❌ Primary yt-dlp attempt threw for "${actualVideoId}": ${err?.message || err}\n` +
-          (err?.stderr ? `Captured Stderr:\n${err.stderr}\n` : '')
-        );
       }
     }
 
@@ -683,8 +729,7 @@ export async function resolveAudioStream(
       '--no-check-certificates',
       '--socket-timeout',
       '30',
-      '--user-agent',
-      getRandomStealthUserAgent(),
+      ...getYtDlpHeaderArgs(),
       '--extractor-args',
       'youtube:player_client=visionos,android,mweb',
       '-f',
@@ -695,7 +740,14 @@ export async function resolveAudioStream(
 
     let fallbackRes: { stdout: string; stderr: string; code: number | null } | null = null;
     try {
-      fallbackRes = await runYtDlpProcess(fallbackArgs, defaultResolverTimeoutMs);
+      fallbackRes = await retryWithBackoff(
+        () => runYtDlpProcess(fallbackArgs, defaultResolverTimeoutMs, `stream:fallback:${actualVideoId}`),
+        {
+          maxRetries: 2,
+          initialDelayMs: 800,
+          shouldRetry: (err) => isRetryableError(err),
+        }
+      );
     } catch (fallbackErr: any) {
       console.error(
         `[AudioResolver] ❌ Fallback yt-dlp attempt threw for "${actualVideoId}": ${fallbackErr?.message || fallbackErr}\n` +
@@ -828,4 +880,105 @@ export async function resolveAudioStream(
       `Gagal mengekstrak audio stream untuk ${rawId}. Semua jalur failover (cookies, multi-client, dan emergency mirror) tidak dapat mengakses konten ini.`
     );
   });
+}
+
+/**
+ * Progressive On-the-Fly Audio Streamer via yt-dlp stdout pipe.
+ *
+ * Emits audio chunks in real-time as they arrive from YouTube, allowing
+ * instant playback in the browser without waiting for 100% download.
+ */
+export function createYtDlpProgressiveStream(
+  videoId: string,
+  requestSignal?: AbortSignal
+): { stream: ReadableStream<Uint8Array>; contentType: string; cleanup: () => void } {
+  const cleanId = sanitizeVideoId(videoId) || videoId;
+  const targetUrl = `https://www.youtube.com/watch?v=${cleanId}`;
+  const ytDlpBin = findYtDlpBinary();
+  const cookiesPath = getCookiesPath();
+  const stealthHeaders = getYtDlpHeaderArgs();
+
+  const args = [
+    '--no-warnings',
+    '--no-playlist',
+    '--no-check-certificates',
+    '--socket-timeout',
+    '20',
+    ...stealthHeaders,
+    '--remote-components',
+    'ejs:github',
+    '-f',
+    'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio',
+    '-o',
+    '-',
+  ];
+
+  if (cookiesPath) {
+    args.push('--cookies', cookiesPath);
+  }
+  args.push(targetUrl);
+
+  const env = getExtendedEnv();
+  const child = spawn(ytDlpBin, args, {
+    env: { ...env, PYTHONUNBUFFERED: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  const cleanup = () => {
+    try {
+      if (!child.killed) {
+        child.kill('SIGTERM');
+        setTimeout(() => {
+          try {
+            if (!child.killed) child.kill('SIGKILL');
+          } catch {}
+        }, 1500).unref();
+      }
+    } catch {}
+    try {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    } catch {}
+  };
+
+  if (requestSignal) {
+    if (requestSignal.aborted) {
+      cleanup();
+    } else {
+      requestSignal.addEventListener('abort', cleanup, { once: true });
+    }
+  }
+
+  // Prevent zombie processes and memory leaks on stdout stream close
+  child.stdout.on('end', cleanup);
+  child.stdout.on('close', cleanup);
+  child.on('close', () => {
+    try {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    } catch {}
+  });
+
+  // Detect cookie failure during progressive pipe streaming
+  child.stderr?.on('data', (chunk) => {
+    const errText = chunk.toString();
+    if (isCookieError(errText) && cookiesPath) {
+      cookieRotator.reportCookieFailure(cookiesPath, errText);
+      console.warn(`[ProgressiveStream] ⚠️ Cookie "${path.basename(cookiesPath)}" ditolak selama pipe streaming. Masuk masa cooldown.`);
+    }
+  });
+
+  // Prevent uncaught errors on child process
+  child.on('error', (err) => {
+    console.warn(`[AudioResolver] Progressive yt-dlp child error for ${cleanId}:`, err.message);
+    cleanup();
+  });
+
+  const webStream = Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
+
+  return {
+    stream: webStream,
+    contentType: 'audio/mp4',
+    cleanup,
+  };
 }

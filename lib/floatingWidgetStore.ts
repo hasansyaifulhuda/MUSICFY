@@ -4,7 +4,6 @@ import { toast } from './toast';
 
 /**
  * Enterprise Floating Mini-Player Widget Store
- * Master Blueprint PMUSIC Architecture - Batch 2 (Poin 22)
  *
  * Guarantees:
  * 1. Persistent toggle preference in localStorage.

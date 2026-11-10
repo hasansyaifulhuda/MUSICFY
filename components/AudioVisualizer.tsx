@@ -15,14 +15,13 @@ export interface AudioVisualizerProps {
 
 /**
  * Enterprise Real-Time Web Audio API Canvas Visualizer (60fps)
- * Master Blueprint PMUSIC Architecture - Batch 2 (Poin 21) & Batch 3 (Poin 74)
  *
  * Guarantees:
  * 1. Direct hardware connection to AnalyserNode from Web Audio API.
  * 2. 60fps smooth canvas rendering with devicePixelRatio high-DPI clarity.
  * 3. Gravitational peak cap physics and smooth decay transitions.
  * 4. Strict component cleanup (cancelAnimationFrame) preventing CPU/GPU leaks.
- * 5. Battery Saver (Poin 74): Dynamic frame throttling (~15fps) when low-power mode is active.
+ * 5. Battery Saver: Dynamic frame throttling (~15fps) when low-power mode is active.
  * 6. Zero-allocation rendering loop for minimal garbage collection pauses.
  */
 export const AudioVisualizer = memo(function AudioVisualizer({
@@ -94,10 +93,7 @@ export const AudioVisualizer = memo(function AudioVisualizer({
       if (typeof document !== 'undefined' && document.hidden) {
         animFrameRef.current = null;
         return;
-      }
-
-      // Poin 74: If low-power / battery-saver is active, throttle to ~15 FPS to conserve CPU/GPU
-      if (isLowPowerRef.current && currentTime > 0 && currentTime - lastFrameTimestamp < 66) {
+      }      if (isLowPowerRef.current && currentTime > 0 && currentTime - lastFrameTimestamp < 66) {
         animFrameRef.current = requestAnimationFrame(render);
         return;
       }
@@ -212,3 +208,6 @@ export const AudioVisualizer = memo(function AudioVisualizer({
     </div>
   );
 });
+
+export default AudioVisualizer;
+

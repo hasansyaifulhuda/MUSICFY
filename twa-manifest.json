@@ -1,0 +1,54 @@
+{
+  "packageId": "com.musicfy.app",
+  "host": "shanz.my.id",
+  "name": "MusicFY",
+  "launcherName": "MusicFY",
+  "themeColor": "#000000",
+  "navigationColor": "#000000",
+  "backgroundColor": "#000000",
+  "enableNotifications": true,
+  "startUrl": "/",
+  "iconUrl": "https://shanz.my.id/icon.png",
+  "maskableIconUrl": "https://shanz.my.id/icon.png",
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "shortcuts": [
+    {
+      "name": "Cari Musik",
+      "shortName": "Cari",
+      "url": "https://shanz.my.id/search",
+      "icon": "https://shanz.my.id/icon.png"
+    },
+    {
+      "name": "Lagu Offline",
+      "shortName": "Unduhan",
+      "url": "https://shanz.my.id/download",
+      "icon": "https://shanz.my.id/icon.png"
+    },
+    {
+      "name": "Koleksi Saya",
+      "shortName": "Koleksi",
+      "url": "https://shanz.my.id/library",
+      "icon": "https://shanz.my.id/icon.png"
+    }
+  ],
+  "webManifestUrl": "https://shanz.my.id/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {
+    "playBilling": {
+      "enabled": false
+    },
+    "locationDelegation": {
+      "enabled": false
+    }
+  },
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "musicfy"
+  }
+}

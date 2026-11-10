@@ -4,7 +4,6 @@ import { toast } from './toast';
 
 /**
  * Enterprise Floating Lyrics Pill Store
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 80)
  *
  * Guarantees:
  * 1. Persistent toggle preference (pmusic_floating_lyrics_pill_v1).

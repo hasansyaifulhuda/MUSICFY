@@ -6,7 +6,6 @@ import { clientDeduplicator } from './clientDeduplication';
 
 /**
  * Enterprise Client-Side Memory Leak Sentinel
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 53)
  *
  * Guarantees:
  * 1. Proactive monitoring of V8 JS Heap allocations via performance.memory.

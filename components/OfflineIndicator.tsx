@@ -74,7 +74,7 @@ export function OfflineIndicator() {
         <aside
           role="status"
           aria-live="polite"
-          className="fixed top-5 left-1/2 -translate-x-1/2 z-[250] pointer-events-none select-none max-w-[90vw]"
+          className="fixed top-5 left-1/2 -translate-x-1/2 z-[250] pointer-events-none select-none max-w-[92vw]"
         >
           <motion.div
             key={toast.id}
@@ -82,7 +82,7 @@ export function OfflineIndicator() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -16, scale: 0.95 }}
             transition={{ duration: 0.25, ease: 'easeOut' }}
-            className={`flex items-center gap-2.5 px-4 py-2 rounded-full border shadow-2xl backdrop-blur-md ${
+            className={`flex items-center gap-2.5 px-3.5 sm:px-4 py-2 rounded-full border shadow-2xl backdrop-blur-md max-w-full ${
               toast.type === 'offline'
                 ? 'bg-[#181818]/95 border-amber-500/25 text-white shadow-black/60'
                 : 'bg-[#181818]/95 border-[#1DB954]/30 text-white shadow-black/60'
@@ -93,7 +93,7 @@ export function OfflineIndicator() {
             ) : (
               <Wifi className="w-3.5 h-3.5 text-[#1DB954] shrink-0 stroke-[2.2]" />
             )}
-            <span className="text-xs font-medium tracking-tight text-white/90 whitespace-nowrap">
+            <span className="text-xs font-medium tracking-tight text-white/90 truncate max-w-[68vw]">
               {toast.message}
             </span>
             {toast.type === 'offline' ? (
@@ -107,3 +107,6 @@ export function OfflineIndicator() {
     </AnimatePresence>
   );
 }
+
+export default OfflineIndicator;
+

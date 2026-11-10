@@ -54,6 +54,7 @@ export default function AlbumPage() {
     return () => {
       active = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [albumId]);
 
   const formatDuration = (seconds: number) => {

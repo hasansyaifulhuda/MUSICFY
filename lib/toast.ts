@@ -38,3 +38,6 @@ export const toast = {
   info: (msg: string) => useToastStore.getState().showToast(msg, 'info'),
   error: (msg: string) => useToastStore.getState().showToast(msg, 'error'),
 };
+
+export default toast;
+

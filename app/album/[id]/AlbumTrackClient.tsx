@@ -1,7 +1,7 @@
 'use client';
 
 import React, { memo } from 'react';
-import { MoreVertical } from 'lucide-react';
+import { EllipsisVertical as MoreVertical } from 'lucide-react';
 import { usePlayerStore } from '@/lib/store';
 import { MarqueeText } from '@/components/MarqueeText';
 
@@ -28,7 +28,7 @@ const AlbumTrackClient = memo(function AlbumTrackClient({
   return (
     <div
       className="flex items-center gap-3.5 py-2.5 px-3 rounded-lg hover:bg-white/10 transition-colors cursor-pointer group select-none content-auto gpu-accelerated"
-      onClick={() => playTrack(track, album?.songs || [], 'playlist', index)}
+      onClick={() => playTrack?.(track, album?.songs || [], 'playlist', index)}
     >
       <div className="w-7 text-center text-[#b3b3b3] group-hover:text-white font-mono text-sm shrink-0">
         {isPlayingCurrent ? (
@@ -60,7 +60,7 @@ const AlbumTrackClient = memo(function AlbumTrackClient({
       <button
         onClick={(e) => {
           e.stopPropagation();
-          setTrackToAdd(track);
+          setTrackToAdd?.(track);
         }}
         className="p-1.5 text-white/40 hover:text-white transition-colors cursor-pointer"
         title="Tambahkan ke Playlist"

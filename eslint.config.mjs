@@ -6,6 +6,7 @@ export default defineConfig([
   {
     rules: {
       "react-hooks/set-state-in-effect": "off",
+      "react-hooks/immutability": "off",
     },
   },
 ]);

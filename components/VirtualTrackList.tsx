@@ -1,6 +1,6 @@
 'use client';
 
-import React, { memo, useState, useEffect, useRef, useCallback } from 'react';
+import React, { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Track } from '@/lib/store';
 import { TrackItem } from './TrackItem';
 
@@ -19,7 +19,6 @@ export interface VirtualTrackListProps<T = any> {
 
 /**
  * Lightweight, 60fps Zero-Dependency Window Virtualization Component
- * Master Blueprint PMUSIC Architecture - Phase 1.1 (Point 4)
  *
  * Keeps DOM node count minimal (~20-25 items instead of hundreds or thousands),
  * eliminating scroll lag, memory thrashing, and frame drops.
@@ -39,7 +38,17 @@ export const VirtualTrackList = memo(function VirtualTrackList<T = any>({
   const containerRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(800);
+  const [actualItemHeight, setActualItemHeight] = useState(itemHeight);
   const rafIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    try {
+      const rootFs = parseFloat(window.getComputedStyle(document.documentElement).fontSize);
+      if (!isNaN(rootFs) && rootFs > 0) {
+        setActualItemHeight(Math.round((itemHeight / 16) * rootFs));
+      }
+    } catch {}
+  }, [itemHeight]);
 
   const listItems: T[] = (tracks || items || []) as T[];
 
@@ -118,16 +127,16 @@ export const VirtualTrackList = memo(function VirtualTrackList<T = any>({
 
   // Calculate windowing boundaries
   const totalCount = listItems.length;
-  const totalHeight = totalCount * itemHeight;
+  const totalHeight = totalCount * actualItemHeight;
 
-  const rawStartIndex = Math.floor(scrollTop / itemHeight);
-  const rawEndIndex = Math.ceil((scrollTop + viewportHeight) / itemHeight);
+  const rawStartIndex = Math.floor(scrollTop / actualItemHeight);
+  const rawEndIndex = Math.ceil((scrollTop + viewportHeight) / actualItemHeight);
 
   const startIndex = Math.max(0, rawStartIndex - overscan);
   const endIndex = Math.min(totalCount, rawEndIndex + overscan);
 
   const visibleItems = listItems.slice(startIndex, endIndex);
-  const offsetY = startIndex * itemHeight;
+  const offsetY = startIndex * actualItemHeight;
 
   return (
     <div

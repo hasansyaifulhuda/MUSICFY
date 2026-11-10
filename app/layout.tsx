@@ -9,8 +9,12 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { RouteContainer } from '@/components/RouteContainer';
 import { ClientModals } from '@/components/ClientModals';
 import { PlatformBootstrapper } from '@/components/PlatformBootstrapper';
+import { UmamiAnalytics } from '@/components/UmamiAnalytics';
+import { VisitorHeartbeat } from '@/components/VisitorHeartbeat';
+import { getAppUrl } from '@/lib/config';
 
 export const metadata: Metadata = {
+  metadataBase: new URL(getAppUrl()),
   title: 'MusicFY - Pemutar Musik',
   description: 'MusicFY - Pemutar Musik: dengarkan jutaan lagu dan podcast gratis di platform streaming musik modern.',
   manifest: '/manifest.json',
@@ -38,77 +42,38 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="id" className="dark" data-scroll-behavior="smooth" suppressHydrationWarning>
       <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         {/* Resource Hints & DNS Prefetching to eliminate DNS lookup latency */}
         <link rel="preconnect" href="https://shanz.my.id" crossOrigin="anonymous" />
         <link rel="dns-prefetch" href="https://shanz.my.id" />
         <link rel="preconnect" href="https://i.ytimg.com" crossOrigin="anonymous" />
         <link rel="dns-prefetch" href="https://i.ytimg.com" />
         <meta name="referrer" content="no-referrer" />
+        {/* Immediate Cross-Platform DPI & Viewport Normalization (Zero FOUC on Windows) */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
-                var NOISY = [
-                  "Failed to execute 'postMessage' on 'DOMWindow'",
-                  "The target origin provided",
-                  "does not match the recipient window's origin",
-                  "The play() request was interrupted",
-                  "play() failed because the user didn't interact",
-                  "The AudioContext was not allowed to start",
-                  "message channel closed before a response was received",
-                  "ResizeObserver loop completed",
-                  "ResizeObserver loop limit exceeded",
-                  "ERR_BLOCKED_BY_CLIENT",
-                  "AbortError",
-                  "Share canceled",
-                  "www-widgetapi.js",
-                  "www.youtube.com/iframe_api",
-                  "youtube.com/generate_204",
-                  "youtube-nocookie.com",
-                  "doubleclick.net",
-                  "InvalidStateError",
-                  "database connection is closing",
-                  "transaction was aborted",
-                  "TransactionInactiveError",
-                  "NotSupportedError",
-                  "NotAllowedError",
-                  "A listener indicated an asynchronous response",
-                  "chrome-extension://",
-                  "moz-extension://",
-                  "safari-extension://",
-                  "Navigator.share is not supported",
-                  "Web Share API is not supported",
-                  "googlevideo.com",
-                  "ytimg.com"
-                ];
-                function isNoise(msg) {
-                  if (!msg) return false;
-                  var s = typeof msg === 'string' ? msg : (msg && msg.message ? msg.message : String(msg));
-                  for (var i = 0; i < NOISY.length; i++) {
-                    if (s.indexOf(NOISY[i]) !== -1) return true;
+                try {
+                  var ua = navigator.userAgent || '';
+                  var p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+                  var isWin = /windows|win32|win64/i.test(ua) || /win/i.test(p);
+                  var isMob = /android|iphone|ipad|ipod|mobile/i.test(ua);
+                  var root = document.documentElement;
+                  if (isWin && !isMob) {
+                    root.setAttribute('data-platform', 'windows');
+                    root.setAttribute('data-is-windows-desktop', 'true');
+                    var dpr = window.devicePixelRatio || 1;
+                    var scale = dpr >= 1.5 ? 0.82 : (dpr >= 1.2 ? 0.875 : 0.91);
+                    root.style.setProperty('--platform-scale', String(scale));
+                    var targetPx = Math.round(16 * scale * 10) / 10;
+                    root.style.fontSize = targetPx + 'px';
+                  } else {
+                    root.style.fontSize = '16px';
                   }
-                  return false;
-                }
-                var origErr = console.error;
-                var origWarn = console.warn;
-                console.error = function() {
-                  for (var i = 0; i < arguments.length; i++) {
-                    if (isNoise(arguments[i])) return;
-                  }
-                  origErr.apply(console, arguments);
-                };
-                console.warn = function() {
-                  for (var i = 0; i < arguments.length; i++) {
-                    if (isNoise(arguments[i])) return;
-                  }
-                  origWarn.apply(console, arguments);
-                };
-                window.addEventListener('unhandledrejection', function(e) {
-                  if (isNoise(e.reason)) { e.preventDefault(); }
-                });
-                window.addEventListener('error', function(e) {
-                  if (isNoise(e.error) || isNoise(e.message)) { e.preventDefault(); }
-                });
+                  root.style.setProperty('-webkit-text-size-adjust', '100%');
+                  root.style.setProperty('text-size-adjust', '100%');
+                } catch (e) {}
               })();
             `,
           }}
@@ -118,6 +83,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         className="bg-black text-white antialiased min-h-screen selection:bg-[#1DB954] selection:text-black font-sans overflow-x-hidden"
         suppressHydrationWarning
       >
+        <UmamiAnalytics />
+        <VisitorHeartbeat />
         <MusicProvider>
           <PlatformBootstrapper />
           <BackgroundProvider />
@@ -129,7 +96,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
           {/* Main Content Viewport */}
           <div className="md:pl-64 lg:pl-72 md:p-2 min-h-screen">
-            <div className="min-h-[calc(100vh-16px)] bg-[#121212] md:rounded-lg overflow-hidden pb-28 md:pb-32 border border-transparent md:border-white/[0.04] shadow-2xl relative gpu-accelerated contain-paint">
+            <div className="min-h-[calc(100vh-16px)] bg-[#121212]/80 backdrop-blur-md md:rounded-2xl overflow-hidden pb-28 md:pb-32 border border-transparent md:border-white/[0.06] shadow-2xl relative gpu-accelerated contain-paint">
               <RouteContainer>
                 {children}
               </RouteContainer>

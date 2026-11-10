@@ -5,7 +5,6 @@ import { Track } from './store';
 
 /**
  * Enterprise Track Context Menu Store
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 78)
  *
  * Provides application-wide state management for right-click and
  * mobile touch long-press contextual menus without DOM hierarchy clipping.

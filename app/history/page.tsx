@@ -15,7 +15,7 @@ export default function HistoryPage() {
   const clearHistory = usePlayerStore((state) => state.clearHistory);
   const removeFromHistory = usePlayerStore((state) => state.removeFromHistory);
 
-  const [mounted, setMounted] = useState(false);
+  const [mounted, setMounted] = useState(() => typeof window !== 'undefined');
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [showConfirmClear, setShowConfirmClear] = useState(false);

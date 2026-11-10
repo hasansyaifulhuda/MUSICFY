@@ -2,13 +2,12 @@
 
 /**
  * Enterprise Encrypted Local Metadata Vault & State Protection Safeguard
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 55 & 96)
  *
  * Guarantees:
  * 1. Hardware-accelerated AES-GCM 256-bit encryption via Web Crypto API.
  * 2. Deterministic PBKDF2 device-unique key derivation with SHA-256.
  * 3. Transparent fallback for older browser engines.
- * 4. Poin 96: State integrity verification with schema validation & safe fallbacks.
+ * 4. State integrity verification with schema validation & safe fallbacks.
  */
 
 const VAULT_SALT_KEY = 'pmusic_vault_salt_v1';
@@ -70,7 +69,7 @@ async function deriveVaultKey(): Promise<CryptoKey | null> {
 }
 
 /**
- * Poin 55: Encrypts structured metadata or strings before writing to IndexedDB or localStorage.
+ * Encrypts structured metadata or strings before writing to IndexedDB or localStorage.
  */
 export async function encryptVaultData(data: any): Promise<string> {
   const jsonStr = typeof data === 'string' ? data : JSON.stringify(data);
@@ -106,7 +105,7 @@ export async function encryptVaultData(data: any): Promise<string> {
 }
 
 /**
- * Poin 55: Decrypts vault ciphertext back into structured object or string.
+ * Decrypts vault ciphertext back into structured object or string.
  */
 export async function decryptVaultData<T = any>(ciphertext: string): Promise<T | null> {
   if (!ciphertext || typeof ciphertext !== 'string') return null;
@@ -173,7 +172,7 @@ export async function decryptVaultData<T = any>(ciphertext: string): Promise<T |
 }
 
 /**
- * Poin 96: Data Protection & State Integrity Safeguard.
+ * Data Protection & State Integrity Safeguard.
  * Validates input against schema validator; if corrupted or malformed, returns safe default.
  */
 export function validateStateIntegrity<T>(

@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { toast } from '@/lib/toast';
-import { pauseAudioSafely } from './audioElement';
+import { pauseAudioSafely, safeFadeOut, getPersistentAudioElement } from './audioElement';
 import { usePlayerStore } from './store';
+import { fadeOutWebAudioGain, restoreWebAudioGain } from './audioEffects';
 
 export interface SleepTimerState {
   isActive: boolean;
@@ -18,6 +19,7 @@ export interface SleepTimerState {
 }
 
 let intervalTimer: NodeJS.Timeout | null = null;
+let isFadingOut = false;
 
 export const useSleepTimerStore = create<SleepTimerState>((set, get) => ({
   isActive: false,
@@ -35,6 +37,13 @@ export const useSleepTimerStore = create<SleepTimerState>((set, get) => ({
     if (intervalTimer) {
       clearInterval(intervalTimer);
       intervalTimer = null;
+    }
+
+    isFadingOut = false;
+    restoreWebAudioGain();
+    const audio = getPersistentAudioElement();
+    if (audio) {
+      audio.volume = usePlayerStore.getState().volume ?? 1;
     }
 
     const now = Date.now();
@@ -60,6 +69,13 @@ export const useSleepTimerStore = create<SleepTimerState>((set, get) => ({
     if (intervalTimer) {
       clearInterval(intervalTimer);
       intervalTimer = null;
+    }
+
+    isFadingOut = false;
+    restoreWebAudioGain();
+    const audio = getPersistentAudioElement();
+    if (audio) {
+      audio.volume = usePlayerStore.getState().volume ?? 1;
     }
 
     const wasActive = get().isActive;
@@ -89,12 +105,26 @@ export const useSleepTimerStore = create<SleepTimerState>((set, get) => ({
     const now = Date.now();
     const remainingMs = targetTimestamp - now;
 
+    // Trigger smooth fade-out during the last 5 seconds (5000ms)
+    if (remainingMs <= 5000 && remainingMs > 0 && !isFadingOut) {
+      isFadingOut = true;
+      const fadeDurationSec = Math.max(1, Math.min(5, Math.ceil(remainingMs / 1000)));
+      // Web Audio API GainNode linear/smooth ramp fade-out
+      fadeOutWebAudioGain(fadeDurationSec);
+      // Synchronize HTMLAudioElement safe fade-out
+      const audio = getPersistentAudioElement();
+      if (audio) {
+        safeFadeOut(audio, remainingMs);
+      }
+    }
+
     if (remainingMs <= 0) {
       // Time is up! Stop playback cleanly and notify user
       if (intervalTimer) {
         clearInterval(intervalTimer);
         intervalTimer = null;
       }
+      isFadingOut = false;
 
       set({
         isActive: false,
@@ -106,6 +136,12 @@ export const useSleepTimerStore = create<SleepTimerState>((set, get) => ({
       try {
         pauseAudioSafely();
         usePlayerStore.getState().setPlaying(false);
+        // Restore Web Audio Gain and audio element volume for subsequent plays
+        restoreWebAudioGain();
+        const audio = getPersistentAudioElement();
+        if (audio) {
+          audio.volume = usePlayerStore.getState().volume ?? 1;
+        }
       } catch {}
 
       toast.info('Pengatur waktu tidur selesai: Pemutaran musik dihentikan');

@@ -164,9 +164,13 @@ public class AudioForegroundService extends Service {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         super.onTaskRemoved(rootIntent);
-        // The user explicitly closed/swiped away the app from recent apps!
+        // Gaming Mode & Background Persistence:
+        // If music is actively playing, keep foreground service & notification alive!
         try {
             MediaSessionBridge bridge = MediaSessionBridge.getInstance();
+            if (bridge != null && bridge.isPlaying()) {
+                return;
+            }
             if (bridge != null) {
                 bridge.destroy();
             }

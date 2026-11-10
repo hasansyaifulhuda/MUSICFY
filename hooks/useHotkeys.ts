@@ -15,16 +15,16 @@ interface HotkeyOptions {
 }
 
 /**
- * Global Keyboard Shortcuts Master Controls (Poin 97):
+ * Global Keyboard Shortcuts Master Controls:
  * - Space / 'k': Play / Pause
- * - ArrowLeft / 'j': Seek backward 5s
- * - ArrowRight / 'l': Seek forward 5s
+ * - ArrowRight: Skip ke lagu berikutnya (atau Shift+ArrowRight / 'l': Maju 5s)
+ * - ArrowLeft: Mundur ke lagu sebelumnya (atau Shift+ArrowLeft / 'j': Mundur 5s)
+ * - 'm' / 'M': Mute / Unmute audio
  * - ArrowUp: Volume +5%
  * - ArrowDown: Volume -5%
- * - 'm' / 'M': Mute / Unmute
- * - 'n' / 'N': Next Track
- * - 'p' / 'P': Prev Track
- * - Ctrl + Shift + D: Developer Diagnostic Modal (Poin 100)
+ * - 'n' / 'N': Lagu berikutnya (Next Track)
+ * - 'p' / 'P': Lagu sebelumnya (Prev Track)
+ * - Ctrl + Shift + D: Developer Diagnostic Modal
  */
 export function useHotkeys(options: HotkeyOptions) {
   const optionsRef = useRef(options);
@@ -57,7 +57,7 @@ export function useHotkeys(options: HotkeyOptions) {
         return;
       }
 
-      // Check modifier keys (don't override Cmd+C, Ctrl+R, etc.)
+      // Check modifier keys (don't override Cmd+C, Ctrl+R, etc., but allow Shift for secondary hotkeys)
       if (event.ctrlKey || event.metaKey || event.altKey) {
         return;
       }
@@ -71,16 +71,46 @@ export function useHotkeys(options: HotkeyOptions) {
           break;
         }
 
-        // Seek Backward (5s)
-        case 'ArrowLeft':
+        // Mundur Lagu / Seek Backward
+        case 'ArrowLeft': {
+          event.preventDefault();
+          if (event.shiftKey) {
+            // Shift + Panah Kiri: Mundur 5 detik
+            optionsRef.current.onSeekBackward?.();
+          } else {
+            // Panah Kiri: Mundur ke lagu sebelumnya (Prev track)
+            if (optionsRef.current.onPrevTrack) {
+              optionsRef.current.onPrevTrack();
+            } else {
+              optionsRef.current.onSeekBackward?.();
+            }
+          }
+          break;
+        }
+
         case 'KeyJ': {
           event.preventDefault();
           optionsRef.current.onSeekBackward?.();
           break;
         }
 
-        // Seek Forward (5s)
-        case 'ArrowRight':
+        // Skip Lagu / Seek Forward
+        case 'ArrowRight': {
+          event.preventDefault();
+          if (event.shiftKey) {
+            // Shift + Panah Kanan: Maju 5 detik
+            optionsRef.current.onSeekForward?.();
+          } else {
+            // Panah Kanan: Skip ke lagu berikutnya (Next track)
+            if (optionsRef.current.onNextTrack) {
+              optionsRef.current.onNextTrack();
+            } else {
+              optionsRef.current.onSeekForward?.();
+            }
+          }
+          break;
+        }
+
         case 'KeyL': {
           event.preventDefault();
           optionsRef.current.onSeekForward?.();
@@ -108,14 +138,14 @@ export function useHotkeys(options: HotkeyOptions) {
           break;
         }
 
-        // Next Track
+        // Next Track (Explicit 'n')
         case 'KeyN': {
           event.preventDefault();
           optionsRef.current.onNextTrack?.();
           break;
         }
 
-        // Previous Track
+        // Previous Track (Explicit 'p')
         case 'KeyP': {
           event.preventDefault();
           optionsRef.current.onPrevTrack?.();

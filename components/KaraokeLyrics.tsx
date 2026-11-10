@@ -11,7 +11,7 @@ import React, {
 import { cn } from '@/lib/utils';
 import { getPersistentAudioElement } from '@/lib/audioElement';
 import { useLyricsOffsetStore } from '@/lib/lyricsOffsetStore';
-import { parseTimestampToSeconds } from '@/lib/performance';
+import { parseTimestampToSeconds, findActiveLyricIndex } from '@/lib/performance';
 import { Radio, Sparkles, Disc3 } from 'lucide-react';
 
 export interface KaraokeWord {
@@ -55,15 +55,15 @@ export interface KaraokeLyricsProps {
    */
   audioElement?: HTMLAudioElement | null;
   /**
-   * Active highlight color (default: '#1DB954' Spotify vibrant green).
+   * Active highlight color (default: '#FFFFFF' Pure White).
    */
   activeColor?: string;
   /**
-   * Inactive unplayed color (default: 'rgba(255, 255, 255, 0.35)' soft gray).
+   * Inactive unplayed color (default: 'rgba(255, 255, 255, 0.45)' soft white).
    */
   inactiveColor?: string;
   /**
-   * Completed played color (default: '#1DB954').
+   * Completed played color (default: '#FFFFFF').
    */
   completedColor?: string;
   /**
@@ -289,56 +289,10 @@ export function parseKaraokeLyrics(
 }
 
 /**
- * Isolated, high-performance Karaoke Active Word component.
- * Applies continuous left-to-right gradient fill using background-clip: text.
- */
-interface KaraokeActiveWordProps {
-  word: KaraokeWord;
-  curTime: number;
-  activeColor: string;
-  inactiveColor: string;
-}
-
-const KaraokeActiveWord = memo(function KaraokeActiveWord({
-  word,
-  curTime,
-  activeColor,
-  inactiveColor,
-}: KaraokeActiveWordProps) {
-  // Calculate word wipe percentage [0% to 100%]
-  let percent = 0;
-  if (curTime >= word.endTime) {
-    percent = 100;
-  } else if (curTime > word.startTime) {
-    const elapsed = curTime - word.startTime;
-    percent = Math.min(100, Math.max(0, (elapsed / word.duration) * 100));
-  }
-
-  return (
-    <span
-      className="inline-block transition-transform duration-75 select-none"
-      style={{
-        backgroundImage: `linear-gradient(to right, ${activeColor} 0%, ${activeColor} ${percent}%, ${inactiveColor} ${percent}%, ${inactiveColor} 100%)`,
-        WebkitBackgroundClip: 'text',
-        WebkitTextFillColor: 'transparent',
-        backgroundClip: 'text',
-        color: 'transparent',
-      }}
-    >
-      {word.text}&nbsp;
-    </span>
-  );
-});
-
-/**
- * Active Lyric Line Renderer:
- * Subscribes to real-time audio ticks and dynamically recalculates individual word progress.
+ * Active Lyric Line Renderer (Spotify Premium pure white text).
  */
 interface ActiveKaraokeRowProps {
   line: KaraokeLine;
-  curTime: number;
-  activeColor: string;
-  inactiveColor: string;
   onSeek: (time: number) => void;
   setRef: (el: HTMLDivElement | null) => void;
   fontSizeClass: string;
@@ -346,9 +300,6 @@ interface ActiveKaraokeRowProps {
 
 const ActiveKaraokeRow = memo(function ActiveKaraokeRow({
   line,
-  curTime,
-  activeColor,
-  inactiveColor,
   onSeek,
   setRef,
   fontSizeClass,
@@ -364,36 +315,40 @@ const ActiveKaraokeRow = memo(function ActiveKaraokeRow({
       role="button"
       tabIndex={0}
       aria-label={`Lirik aktif: ${line.text}`}
+      style={{
+        color: '#FFFFFF',
+        WebkitTextFillColor: '#FFFFFF',
+        opacity: 1,
+        fontWeight: 800,
+        transform: 'scale(1.03)',
+      }}
       className={cn(
-        'py-3.5 px-4 cursor-pointer select-none origin-center text-center rounded-2xl transition-transform duration-300 transform-gpu',
-        'scale-[1.05] font-black drop-shadow-[0_4px_30px_rgba(29,185,84,0.4)]',
+        'musicfy-lyric-item lyric-active py-3 px-4 cursor-pointer select-none origin-center text-center rounded-2xl transition-all duration-300 transform-gpu will-change-transform font-extrabold text-white',
         fontSizeClass
       )}
     >
-      <p className="leading-tight tracking-tight flex flex-wrap justify-center items-center text-center">
-        {line.words.map((word, wIdx) => (
-          <KaraokeActiveWord
-            key={`act-w-${wIdx}`}
-            word={word}
-            curTime={curTime}
-            activeColor={activeColor}
-            inactiveColor={inactiveColor}
-          />
-        ))}
+      <p
+        className="leading-tight tracking-tight text-center select-none"
+        style={{
+          color: '#FFFFFF',
+          WebkitTextFillColor: '#FFFFFF',
+          fontWeight: 800,
+        }}
+      >
+        {line.text}
       </p>
     </div>
   );
 });
 
 /**
- * Self-contained active lyric line with real-time 60fps gradient fill wipe.
- * Can be dropped into any lyrics list (such as LyricsView or FullScreenLyrics).
+ * Self-contained active lyric line with Spotify Premium pure white text.
  */
 export interface KaraokeLineWipeProps {
   text: string;
-  startTime: number;
+  startTime?: number;
   endTime?: number;
-  isActive: boolean;
+  isActive?: boolean;
   isPast?: boolean;
   activeColor?: string;
   inactiveColor?: string;
@@ -405,134 +360,17 @@ export interface KaraokeLineWipeProps {
 
 export const KaraokeLineWipe = memo(function KaraokeLineWipe({
   text,
-  startTime,
-  endTime,
-  isActive,
-  isPast = false,
-  activeColor = '#1DB954',
-  inactiveColor = 'rgba(255, 255, 255, 0.35)',
-  completedColor = '#1DB954',
   className,
-  videoId,
-  words: propWords,
 }: KaraokeLineWipeProps) {
-  const lyricsOffset = useLyricsOffsetStore((state) => state.getOffset(videoId));
-  const [curTime, setCurTime] = useState<number>(startTime);
-
-  // Compute or synthesize word ranges
-  const words = useMemo(() => {
-    if (propWords && propWords.length > 0) return propWords;
-    const calcEndTime = endTime && endTime > startTime ? endTime : startTime + Math.max(3.0, text.length * 0.12);
-    const lineDuration = Math.max(0.8, calcEndTime - startTime);
-    const tokens = text.split(/\s+/).filter(Boolean);
-
-    if (tokens.length === 0) {
-      return [{
-        text,
-        startTime,
-        endTime: calcEndTime,
-        duration: lineDuration,
-      }];
-    }
-
-    const totalWordChars = tokens.reduce((acc, t) => acc + Math.max(1, t.length), 0);
-    let wordStart = startTime;
-    const synthesized: KaraokeWord[] = [];
-
-    for (let i = 0; i < tokens.length; i++) {
-      const tok = tokens[i];
-      const ratio = Math.max(1, tok.length) / totalWordChars;
-      const dur = Math.max(0.12, lineDuration * ratio);
-      const end = Math.min(calcEndTime, wordStart + dur);
-
-      synthesized.push({
-        text: tok,
-        startTime: wordStart,
-        endTime: end,
-        duration: Math.max(0.1, end - wordStart),
-      });
-
-      wordStart = end;
-    }
-
-    return synthesized;
-  }, [propWords, text, startTime, endTime]);
-
-  // 60fps RAF synchronization while this specific line is active
-  useEffect(() => {
-    if (!isActive) return;
-
-    const audio = getPersistentAudioElement();
-    if (!audio) return;
-
-    let rafId: number | null = null;
-
-    const tick = () => {
-      const raw = audio.currentTime;
-      setCurTime(Math.max(0, raw + lyricsOffset));
-
-      if (!audio.paused && !audio.ended) {
-        rafId = requestAnimationFrame(tick);
-      }
-    };
-
-    const handlePlay = () => {
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(tick);
-    };
-
-    const handlePause = () => {
-      if (rafId) cancelAnimationFrame(rafId);
-      tick();
-    };
-
-    const handleImmediate = () => {
-      tick();
-    };
-
-    // Initial frame
-    tick();
-
-    if (!audio.paused) {
-      rafId = requestAnimationFrame(tick);
-    }
-
-    audio.addEventListener('play', handlePlay, { passive: true });
-    audio.addEventListener('pause', handlePause, { passive: true });
-    audio.addEventListener('timeupdate', handleImmediate, { passive: true });
-    audio.addEventListener('seeked', handleImmediate, { passive: true });
-
-    return () => {
-      if (rafId) cancelAnimationFrame(rafId);
-      audio.removeEventListener('play', handlePlay);
-      audio.removeEventListener('pause', handlePause);
-      audio.removeEventListener('timeupdate', handleImmediate);
-      audio.removeEventListener('seeked', handleImmediate);
-    };
-  }, [isActive, lyricsOffset]);
-
-  if (!isActive) {
-    return (
-      <span
-        className={cn('inline-block transition-colors duration-200 select-none', className)}
-        style={{ color: isPast ? completedColor : inactiveColor }}
-      >
-        {text}
-      </span>
-    );
-  }
-
   return (
-    <span className={cn('inline-flex flex-wrap justify-center items-center select-none', className)}>
-      {words.map((word, idx) => (
-        <KaraokeActiveWord
-          key={`wipe-w-${idx}`}
-          word={word}
-          curTime={curTime}
-          activeColor={activeColor}
-          inactiveColor={inactiveColor}
-        />
-      ))}
+    <span
+      className={cn('inline-block select-none transition-all duration-300 ease-out', className)}
+      style={{
+        color: '#FFFFFF',
+        WebkitTextFillColor: '#FFFFFF',
+      }}
+    >
+      {text}
     </span>
   );
 });
@@ -543,9 +381,7 @@ export const KaraokeLineWipe = memo(function KaraokeLineWipe({
  */
 interface InactiveKaraokeRowProps {
   line: KaraokeLine;
-  isPast: boolean;
-  activeColor: string;
-  inactiveColor: string;
+  position: 'prev' | 'prev-distant' | 'next' | 'next-distant';
   onSeek: (time: number) => void;
   setRef: (el: HTMLDivElement | null) => void;
   fontSizeClass: string;
@@ -554,9 +390,7 @@ interface InactiveKaraokeRowProps {
 const InactiveKaraokeRow = memo(
   function InactiveKaraokeRow({
     line,
-    isPast,
-    activeColor,
-    inactiveColor,
+    position,
     onSeek,
     setRef,
     fontSizeClass,
@@ -565,6 +399,9 @@ const InactiveKaraokeRow = memo(
       onSeek(line.time);
     }, [onSeek, line.time]);
 
+    const opacity =
+      position === 'prev' ? 0.35 : position === 'next' ? 0.45 : 0.20;
+
     return (
       <div
         ref={setRef}
@@ -572,28 +409,39 @@ const InactiveKaraokeRow = memo(
         role="button"
         tabIndex={0}
         aria-label={`Lirik: ${line.text}`}
+        style={{
+          color: '#A1A1AA',
+          WebkitTextFillColor: '#A1A1AA',
+          opacity,
+          fontWeight: 500,
+          transform: position === 'prev' || position === 'next' ? 'scale(1)' : 'scale(0.98)',
+        }}
         className={cn(
-          'py-2.5 px-4 cursor-pointer select-none origin-center text-center rounded-2xl transition-all duration-300 transform-gpu focus:outline-none',
-          'scale-100 font-bold',
-          isPast
-            ? 'opacity-65 hover:opacity-90'
-            : 'opacity-35 hover:opacity-75',
+          'musicfy-lyric-item py-2.5 px-4 cursor-pointer select-none origin-center text-center rounded-2xl transition-all duration-300 transform-gpu focus:outline-none will-change-transform',
+          position === 'prev' && 'lyric-prev font-medium text-[#A1A1AA] hover:opacity-85 hover:text-white',
+          position === 'prev-distant' && 'lyric-distant font-medium text-[#A1A1AA] hover:opacity-85 hover:text-white',
+          position === 'next' && 'lyric-next font-medium text-[#A1A1AA] hover:opacity-85 hover:text-white',
+          position === 'next-distant' && 'lyric-distant font-medium text-[#A1A1AA] hover:opacity-85 hover:text-white',
           fontSizeClass
         )}
-        style={{
-          color: isPast ? activeColor : inactiveColor,
-        }}
       >
-        <p className="leading-relaxed tracking-tight text-center">{line.text}</p>
+        <p
+          className="leading-relaxed tracking-tight text-center select-none"
+          style={{
+            color: '#A1A1AA',
+            WebkitTextFillColor: '#A1A1AA',
+            fontWeight: 500,
+          }}
+        >
+          {line.text}
+        </p>
       </div>
     );
   },
   (prev, next) => {
     return (
       prev.line.id === next.line.id &&
-      prev.isPast === next.isPast &&
-      prev.activeColor === next.activeColor &&
-      prev.inactiveColor === next.inactiveColor &&
+      prev.position === next.position &&
       prev.fontSizeClass === next.fontSizeClass
     );
   }
@@ -608,9 +456,9 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
   duration = 180,
   onSeek,
   audioElement,
-  activeColor = '#1DB954',
-  inactiveColor = 'rgba(255, 255, 255, 0.35)',
-  completedColor = '#1DB954',
+  activeColor = '#FFFFFF',
+  inactiveColor = 'rgba(255, 255, 255, 0.45)',
+  completedColor = '#FFFFFF',
   className,
   autoScroll = true,
   fontSize = '2xl',
@@ -663,7 +511,7 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
     }
   }, [fontSize]);
 
-  // 1. Smooth Centering Auto-Scroll Logic:
+  // 1. Smooth Centering Auto-Scroll Logic using viewport-relative bounding box math:
   const scrollToActiveLine = useCallback(
     (index: number, behavior: ScrollBehavior = 'smooth') => {
       if (!autoScroll || index < 0 || isUserScrollingRef.current) return;
@@ -671,10 +519,10 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
       const targetEl = lineRefs.current[index];
       if (!container || !targetEl) return;
 
-      const containerHeight = container.clientHeight;
-      const lineTop = targetEl.offsetTop;
-      const lineHeight = targetEl.offsetHeight;
-      const targetScrollTop = lineTop - containerHeight / 2 + lineHeight / 2;
+      const containerRect = container.getBoundingClientRect();
+      const lineRect = targetEl.getBoundingClientRect();
+      const lineRelativeTop = lineRect.top - containerRect.top + container.scrollTop;
+      const targetScrollTop = lineRelativeTop - (containerRect.height / 2) + (lineRect.height / 2);
 
       try {
         container.scrollTo({
@@ -708,22 +556,8 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
       const effectiveCurrent = Math.max(0, rawCurrent + lyricsOffset);
       setRealTime(effectiveCurrent);
 
-      // Binary search active line
-      let low = 0;
-      let high = parsedLines.length - 1;
-      let foundIdx = -1;
-
-      if (effectiveCurrent >= parsedLines[0].time) {
-        while (low <= high) {
-          const mid = (low + high) >> 1;
-          if (parsedLines[mid].time <= effectiveCurrent) {
-            foundIdx = mid;
-            low = mid + 1;
-          } else {
-            high = mid - 1;
-          }
-        }
-      }
+      // Binary search active line with calibrated 50ms display-frame tolerance window
+      const foundIdx = findActiveLyricIndex(parsedLines, effectiveCurrent, 0.05);
 
       if (foundIdx !== activeIndexRef.current) {
         activeIndexRef.current = foundIdx;
@@ -841,10 +675,10 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
         {showIntroIndicator && activeIndex === -1 && parsedLines.length > 0 && (
           <div className="py-8 flex flex-col items-center justify-center gap-2.5 text-white/40 animate-pulse text-center">
             <Disc3
-              className="w-8 h-8 animate-spin"
-              style={{ color: activeColor, animationDuration: '4s' }}
+              className="w-8 h-8 animate-spin text-white/40"
+              style={{ animationDuration: '4s' }}
             />
-            <span className="text-xs font-bold tracking-widest uppercase text-white/60">
+            <span className="text-xs font-bold tracking-widest uppercase text-white/50">
               Musik Mengalun • Intro
             </span>
           </div>
@@ -855,10 +689,7 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
           if (line.isSectionHeader) {
             return (
               <div key={line.id} className="pt-4 pb-1 text-center">
-                <span
-                  className="text-xs sm:text-sm font-bold tracking-widest uppercase"
-                  style={{ color: activeColor }}
-                >
+                <span className="text-xs sm:text-sm font-semibold tracking-widest uppercase text-white/40">
                   {line.text.replace(/[\[\]]/g, '')}
                 </span>
               </div>
@@ -870,9 +701,6 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
               <ActiveKaraokeRow
                 key={line.id}
                 line={line}
-                curTime={realTime}
-                activeColor={activeColor}
-                inactiveColor={inactiveColor}
                 onSeek={handleSeek}
                 setRef={(el) => {
                   lineRefs.current[idx] = el;
@@ -882,14 +710,20 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
             );
           }
 
-          const isPast = idx < activeIndex;
+          const position: 'prev' | 'prev-distant' | 'next' | 'next-distant' =
+            idx === activeIndex - 1
+              ? 'prev'
+              : idx < activeIndex - 1
+              ? 'prev-distant'
+              : idx === activeIndex + 1
+              ? 'next'
+              : 'next-distant';
+
           return (
             <InactiveKaraokeRow
               key={line.id}
               line={line}
-              isPast={isPast}
-              activeColor={completedColor}
-              inactiveColor={inactiveColor}
+              position={position}
               onSeek={handleSeek}
               setRef={(el) => {
                 lineRefs.current[idx] = el;
@@ -910,8 +744,7 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
               e.preventDefault();
               handleManualSync();
             }}
-            className="flex items-center gap-2 px-4 py-2 rounded-full text-black font-bold text-xs shadow-2xl hover:scale-105 active:scale-95 transition-transform cursor-pointer"
-            style={{ backgroundColor: activeColor }}
+            className="flex items-center gap-2 px-4 py-2 rounded-full bg-white text-black font-bold text-xs shadow-2xl hover:scale-105 active:scale-95 transition-transform cursor-pointer"
           >
             <Radio className="w-3.5 h-3.5 animate-pulse" />
             <span>Kembali ke lirik aktif</span>

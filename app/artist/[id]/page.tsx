@@ -61,6 +61,7 @@ export default function ArtistPage() {
     return () => {
       active = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [artistId]);
 
   const handleSubscribe = async () => {

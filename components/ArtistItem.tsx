@@ -11,8 +11,16 @@ export const ArtistItem = memo(function ArtistItem({ artist }: { artist: any }) 
 
   return (
     <div
-      className="flex items-center p-2.5 hover:bg-white/10 rounded-md cursor-pointer group transition-colors select-none content-auto gpu-accelerated"
+      onPointerDown={(e) => {
+        if (e.button === 0) router.push(`/artist/${artist.artistId}`);
+      }}
       onClick={() => router.push(`/artist/${artist.artistId}`)}
+      style={{
+        touchAction: 'manipulation',
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+      className="flex items-center p-2.5 hover:bg-white/[0.08] active:bg-white/[0.12] rounded-xl cursor-pointer group transition-all duration-150 select-none content-auto gpu-accelerated border border-transparent hover:border-white/5"
     >
       <div className="relative w-12 h-12 rounded-full overflow-hidden shrink-0 shadow bg-white/5">
         {thumbnail && (

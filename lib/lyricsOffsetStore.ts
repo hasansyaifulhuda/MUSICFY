@@ -4,7 +4,6 @@ import { toast } from './toast';
 
 /**
  * Enterprise Lyrics Offset Synchronization Store
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 68)
  *
  * Guarantees:
  * 1. Granular manual adjustment (+/- 0.1s, +/- 0.5s, +/- 1.0s).

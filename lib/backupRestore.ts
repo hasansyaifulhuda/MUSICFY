@@ -5,7 +5,6 @@ import { toast } from './toast';
 
 /**
  * Enterprise Backup & Restore Engine (JSON Export & Import)
- * Master Blueprint PMUSIC Architecture - Batch 2 (Poin 28)
  *
  * Guarantees:
  * 1. Comprehensive local backup: IndexedDB playlists, liked tracks, history, EQ, and theme settings.
@@ -14,8 +13,8 @@ import { toast } from './toast';
  * 4. Deduplicated restoration into IndexedDB and reactive stores.
  */
 
-export interface PMUSICBackupData {
-  app: 'PMUSIC';
+export interface MusicFYBackupData {
+  app: 'MusicFY' | 'PMUSIC';
   version: number;
   exportedAt: string;
   playlists: CustomPlaylist[];
@@ -78,8 +77,8 @@ export async function exportUserDataToJson(): Promise<boolean> {
     } catch {}
 
     // 5. Construct payload
-    const backup: PMUSICBackupData = {
-      app: 'PMUSIC',
+    const backup: MusicFYBackupData = {
+      app: 'MusicFY',
       version: 2,
       exportedAt: new Date().toISOString(),
       playlists,
@@ -101,7 +100,7 @@ export async function exportUserDataToJson(): Promise<boolean> {
     const dateStr = new Date().toISOString().slice(0, 10);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `pmusic_backup_${dateStr}.json`;
+    a.download = `musicfy_backup_${dateStr}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

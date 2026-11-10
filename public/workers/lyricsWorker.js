@@ -1,9 +1,5 @@
 /**
- * PMUSIC High-Performance Background Web Worker
- * Master Blueprint PMUSIC Architecture - Phase 1.2 (Point 7)
- *
- * Offloads massive lyrics parsing, timestamp normalization,
- * and text search algorithms off the main UI thread.
+ * MusicFY Background Lyrics Parsing Worker
  */
 
 // 1. Timestamp Normalization & Chronological Sorting

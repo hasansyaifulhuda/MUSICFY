@@ -1,9 +1,14 @@
 'use client';
 
 import React, { memo, useState, useCallback, useEffect, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { usePlayerStore } from '@/lib/store';
 import { formatTimeDisplay } from '@/lib/performance';
-import { LyricsView } from './LyricsView';
+
+const LyricsView = dynamic(
+  () => import('./LyricsView').then((mod) => mod.LyricsView),
+  { ssr: false, loading: () => null }
+);
 
 interface ScrubberProps {
   onSeekCommit?: (time: number) => void;
@@ -352,4 +357,6 @@ export const LyricsViewContainer = memo(function LyricsViewContainer({
     </div>
   );
 });
+
+export default LyricsViewContainer;
 

@@ -14,7 +14,6 @@ export interface HeaderUtilityBarProps {
 
 /**
  * Enterprise Header Utility Bar (Storage & Offline Meter)
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 85)
  *
  * Guarantees:
  * 1. Live Storage Quota & Offline Track footprint telemetry.
@@ -23,6 +22,7 @@ export interface HeaderUtilityBarProps {
  * 4. Micro-compact footprint for top of Library & Settings pages.
  */
 export const HeaderUtilityBar = memo(function HeaderUtilityBar({ className }: HeaderUtilityBarProps) {
+  const [isMounted, setIsMounted] = useState(false);
   const [storageUsageMB, setStorageUsageMB] = useState<number | null>(null);
   const [storageQuotaGB, setStorageQuotaGB] = useState<number | null>(null);
   const [storagePercent, setStoragePercent] = useState<number>(0);
@@ -44,8 +44,30 @@ export const HeaderUtilityBar = memo(function HeaderUtilityBar({ className }: He
   };
 
   useEffect(() => {
+    setIsMounted(true);
     refreshStorage();
   }, []);
+
+  if (!isMounted) {
+    return (
+      <div
+        className={cn(
+          'w-full bg-white/[0.03] border border-white/[0.06] rounded-2xl px-3.5 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs select-none backdrop-blur-md min-h-[36px]',
+          className
+        )}
+        suppressHydrationWarning
+      >
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <span className="relative flex h-2 w-2">
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500/60" />
+            </span>
+            <span className="font-semibold text-white/60">MusicFY System</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -53,11 +75,16 @@ export const HeaderUtilityBar = memo(function HeaderUtilityBar({ className }: He
         'w-full bg-white/[0.03] border border-white/[0.06] rounded-2xl px-3.5 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs select-none backdrop-blur-md',
         className
       )}
+      suppressHydrationWarning
     >
       {/* Network & Latency Badge */}
       <div className="flex items-center gap-2">
         <div
+          onPointerDown={(e) => {
+            if (e.button === 0) measureLatency();
+          }}
           onClick={() => measureLatency()}
+          style={{ touchAction: 'manipulation' }}
           className="flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity"
           title="Klik untuk uji latensi jaringan"
         >

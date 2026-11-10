@@ -64,7 +64,7 @@ export async function GET(request: Request) {
       'Profil artis berhasil dimuat',
       200,
       {
-        'Cache-Control': 'public, s-maxage=7200, stale-while-revalidate=86400',
+        'Cache-Control': 'public, max-age=3600, s-maxage=7200, stale-while-revalidate=86400',
       }
     );
   } catch (error: any) {

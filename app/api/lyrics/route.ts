@@ -1,6 +1,8 @@
 import { createErrorResponse, createSuccessResponse } from '@/lib/apiResponse';
 import { MemoryCache } from '@/lib/cache';
 import { ytmusicClient } from '@/lib/ytmusicClient';
+import { scrapeLyricsFromWeb } from '@/lib/lyricsScraper';
+import { geminiService } from '@/lib/gemini';
 
 export interface LyricLine {
   time: number;
@@ -330,7 +332,7 @@ function scoreCandidate(candidate: any, targetTitle: string, targetArtist: strin
  */
 async function fetchLrclib(url: string, timeoutMs: number = 2200): Promise<any[]> {
   const headers = {
-    'User-Agent': 'MusicFY/3.0 (Web Music Player; https://github.com/hasansyaifulhuda/MUSIKP; contact: support@musicfy.app)',
+    'User-Agent': 'MusicFY/3.0 (Web Music Player; https://musicfy.app; contact: support@musicfy.app)',
     'Lrclib-Client': 'MusicFY-Player',
     Accept: 'application/json',
   };
@@ -480,6 +482,44 @@ function extractBestPlainLyrics(
   return null;
 }
 
+/**
+ * Transforms plain lyrics into synchronized timed lyrics using Gemini AI (Flash-Lite),
+ * or falls back gracefully to plain lyrics if AI is unavailable.
+ */
+async function enrichPlainLyricsWithAI(
+  rawLines: LyricLine[],
+  title: string,
+  artist: string,
+  duration: number,
+  sourceName: string
+): Promise<LyricsResult> {
+  if (geminiService.isAvailable() && duration > 15 && rawLines.length >= 2) {
+    try {
+      console.info(
+        `[LyricsRoute] Converting plain lyrics to timed lyrics via Gemini AI for "${title}" - "${artist}" (${duration}s)...`
+      );
+      const timedLines = await geminiService.synchronizeLyrics(rawLines, title, artist, duration);
+      if (timedLines && timedLines.length >= 2 && timedLines.some((l) => l.time > 0)) {
+        return {
+          synced: true,
+          lyrics: timedLines,
+          provider: `${sourceName} (Gemini AI Timed)`,
+          candidateDuration: duration,
+        };
+      }
+    } catch (aiErr: any) {
+      console.warn(`[LyricsRoute] Gemini AI timing failed for "${title}":`, aiErr?.message || aiErr);
+    }
+  }
+
+  return {
+    synced: false,
+    lyrics: rawLines,
+    provider: sourceName,
+    candidateDuration: duration,
+  };
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id') || '';
@@ -488,7 +528,6 @@ export async function GET(request: Request) {
   const durationParam = searchParams.get('duration');
   const duration = durationParam ? parseFloat(durationParam) : 200;
   const force = searchParams.get('force') === 'true' || searchParams.get('force') === '1';
-  const pass = parseInt(searchParams.get('pass') || '1', 10);
 
   if (!id && !rawTitle) {
     return createErrorResponse('Parameter "id" atau "title" wajib disertakan.', 400);
@@ -497,6 +536,30 @@ export async function GET(request: Request) {
   // Clean metadata from video tags, noise, and featured labels
   const { cleanTitle, cleanArtist, primaryArtist, featArtist, simplifiedTitle } = cleanMetadata(rawTitle, rawArtist);
   const cacheKey = `${id}_${cleanTitle}_${cleanArtist}`.toLowerCase();
+
+  // 1. FAST-BAIL FOR LONG TRACKS (1-Hour Mix, Full Album, Compilation, DJ Set, Cover Mix)
+  // Prevents heavy external scraping, API rate limits, or infinite loading on long tracks
+  const isLongAudio =
+    duration > 600 ||
+    /(?:full\s*album|mix|nonstop|1\s*hour|1\s*jam|2\s*hour|live\s*set|compilation|dj\s*set|mashup)/i.test(
+      rawTitle
+    );
+
+  if (isLongAudio) {
+    return createSuccessResponse(
+      {
+        synced: false,
+        lyrics: [],
+        isLongAudio: true,
+        provider: 'none',
+      },
+      'Lirik tidak tersedia untuk trek/album durasi panjang ini.',
+      200,
+      {
+        'Cache-Control': 'public, max-age=86400, s-maxage=86400',
+      }
+    );
+  }
 
   // If forced retry requested, purge cached records
   if (force) {
@@ -509,7 +572,7 @@ export async function GET(request: Request) {
     const cached = lyricsCache.get(cacheKey) || (id ? lyricsCache.get(`vid:${id}`) : null);
     if (cached && Array.isArray(cached.lyrics) && cached.lyrics.length > 0) {
       return createSuccessResponse(cached, 'Lirik lagu berhasil dimuat (Cache)', 200, {
-        'Cache-Control': 'public, s-maxage=86400, stale-while-revalidate=604800',
+        'Cache-Control': 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800',
         'X-Cache': 'HIT',
       });
     }
@@ -518,9 +581,6 @@ export async function GET(request: Request) {
   // =========================================================================
   // MULTI-LAYER SEARCH MECHANISM (Strict Synced-Lyrics-First Priority)
   // Executes targeted queries across LRCLIB with duration tolerance.
-  // CRITICAL FIX: We do NOT pass strict duration to /api/get because LRCLIB 404s
-  // if duration differs by even 3 seconds due to YouTube intro/outro silence!
-  // Instead, our duration-scoring algorithm picks the best matching candidate.
   // =========================================================================
 
   const specificPromise = (async (): Promise<any[]> => {
@@ -575,7 +635,7 @@ export async function GET(request: Request) {
     lyricsCache.set(cacheKey, syncedResult1);
     if (id) lyricsCache.set(`vid:${id}`, syncedResult1);
     return createSuccessResponse(syncedResult1, 'Lirik lagu berhasil dimuat (Synced)', 200, {
-      'Cache-Control': 'public, s-maxage=86400, stale-while-revalidate=604800',
+      'Cache-Control': 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800',
     });
   }
 
@@ -588,126 +648,117 @@ export async function GET(request: Request) {
     lyricsCache.set(cacheKey, syncedResult2);
     if (id) lyricsCache.set(`vid:${id}`, syncedResult2);
     return createSuccessResponse(syncedResult2, 'Lirik lagu berhasil dimuat (Fallback Synced)', 200, {
-      'Cache-Control': 'public, s-maxage=86400, stale-while-revalidate=604800',
+      'Cache-Control': 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800',
     });
   }
 
   // -------------------------------------------------------------------------
-  // STAGE 3: Plain Lyrics Last-Resort Fallback from LRCLIB
+  // PRIORITY 2: Backend Scraper (LirikOnline / Lyrics.ovh) & Plain Lyrics Sources
+  // If synced lyrics were not found, search web scraper and secondary providers,
+  // then convert plain text to timed lyrics via Gemini AI!
   // -------------------------------------------------------------------------
-  const plainResult1 = extractBestPlainLyrics(candidates1, cleanTitle, cleanArtist, duration);
-  if (plainResult1) {
-    lyricsCache.set(cacheKey, plainResult1);
-    if (id) lyricsCache.set(`vid:${id}`, plainResult1);
-    return createSuccessResponse(plainResult1, 'Lirik lagu dimuat (Mode Teks Biasa)', 200, {
-      'Cache-Control': 'public, s-maxage=86400, stale-while-revalidate=604800',
-    });
+  let plainCandidatesText: { text: string; source: string } | null = null;
+
+  // 2A. Check Web Scraper (LirikOnline / lyrics.ovh)
+  try {
+    const scraped = await scrapeLyricsFromWeb(cleanTitle, cleanArtist || primaryArtist);
+    if (scraped && scraped.plainText && scraped.plainText.length > 30) {
+      plainCandidatesText = { text: scraped.plainText, source: scraped.source };
+    }
+  } catch (scrapeErr: any) {
+    console.warn('[LyricsRoute] Web scraper error:', scrapeErr?.message || scrapeErr);
   }
 
-  const plainResult2 = extractBestPlainLyrics(candidates2, cleanTitle, cleanArtist, duration);
-  if (plainResult2) {
-    lyricsCache.set(cacheKey, plainResult2);
-    if (id) lyricsCache.set(`vid:${id}`, plainResult2);
-    return createSuccessResponse(plainResult2, 'Lirik lagu dimuat (Mode Teks Biasa Fallback)', 200, {
-      'Cache-Control': 'public, s-maxage=86400, stale-while-revalidate=604800',
-    });
+  // 2B. If scraper didn't find, check LRCLIB plain text candidates
+  if (!plainCandidatesText) {
+    const plainResult1 = extractBestPlainLyrics(candidates1, cleanTitle, cleanArtist, duration);
+    if (plainResult1 && plainResult1.lyrics.length > 0) {
+      const combinedText = plainResult1.lyrics.map((l) => l.text).join('\n');
+      plainCandidatesText = { text: combinedText, source: 'LRCLIB' };
+    }
   }
 
-  // -------------------------------------------------------------------------
-  // LAYER 4: Secondary External Public APIs (Lyrics.ovh & YouTube Music Native)
-  // -------------------------------------------------------------------------
-  const secondaryPromises: Promise<LyricsResult | null>[] = [];
+  if (!plainCandidatesText) {
+    const plainResult2 = extractBestPlainLyrics(candidates2, cleanTitle, cleanArtist, duration);
+    if (plainResult2 && plainResult2.lyrics.length > 0) {
+      const combinedText = plainResult2.lyrics.map((l) => l.text).join('\n');
+      plainCandidatesText = { text: combinedText, source: 'LRCLIB' };
+    }
+  }
 
-  // 4A. Free public Lyrics.ovh API
-  if (cleanArtist && cleanTitle) {
-    secondaryPromises.push(
-      (async () => {
-        try {
-          const ovhUrl = `https://api.lyrics.ovh/v1/${encodeURIComponent(cleanArtist)}/${encodeURIComponent(cleanTitle)}`;
-          const ovhRes = await fetch(ovhUrl, { signal: AbortSignal.timeout(2400) });
-          if (ovhRes.ok) {
-            const ovhData = await ovhRes.json();
-            if (ovhData.lyrics && typeof ovhData.lyrics === 'string') {
-              const cleanOvh = ovhData.lyrics.replace(/^.*Paroles de la chanson.*\n?/im, '').trim();
-              if (cleanOvh.length > 20) {
-                const parsed = parsePlainLyrics(cleanOvh, duration);
-                if (parsed.length > 0) {
-                  return { synced: false, lyrics: parsed, provider: 'Lyrics.ovh' };
-                }
-              }
+  // 2C. If still not found, check YouTube Music Transcript
+  if (!plainCandidatesText && id && id.length === 11) {
+    try {
+      const ready = await ytmusicClient.ensureInitialized();
+      if (ready) {
+        const ytmusic = ytmusicClient.getRawInstance();
+        const watchPlaylistData = await (ytmusic as any).constructRequest('next', { videoId: id });
+        const tabs =
+          watchPlaylistData?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer
+            ?.watchNextTabbedResultsRenderer?.tabs;
+        let lyricsId = null;
+
+        if (tabs) {
+          for (const tab of tabs) {
+            const tabRenderer = tab.tabRenderer;
+            if (
+              tabRenderer?.endpoint?.browseEndpoint?.browseEndpointContextSupportedConfigs
+                ?.browseEndpointContextMusicConfig?.pageType === 'MUSIC_PAGE_TYPE_TRACK_LYRICS'
+            ) {
+              lyricsId = tabRenderer.endpoint.browseEndpoint.browseId;
+              break;
             }
           }
-        } catch {}
-        return null;
-      })()
-    );
-  }
+        }
 
-  // 4B. YouTube Music Native Transcript Lyrics (if videoId provided)
-  if (id && id.length === 11) {
-    secondaryPromises.push(
-      (async () => {
-        try {
-          const ready = await ytmusicClient.ensureInitialized();
-          if (ready) {
-            const ytmusic = ytmusicClient.getRawInstance();
-            const watchPlaylistData = await (ytmusic as any).constructRequest('next', { videoId: id });
-            const tabs =
-              watchPlaylistData?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer
-                ?.watchNextTabbedResultsRenderer?.tabs;
-            let lyricsId = null;
+        if (lyricsId) {
+          const lyricsData = await (ytmusic as any).constructRequest('browse', { browseId: lyricsId });
+          const runs =
+            lyricsData?.contents?.sectionListRenderer?.contents?.[0]?.musicDescriptionShelfRenderer?.description?.runs;
+          let lyricsText = null;
 
-            if (tabs) {
-              for (const tab of tabs) {
-                const tabRenderer = tab.tabRenderer;
-                if (
-                  tabRenderer?.endpoint?.browseEndpoint?.browseEndpointContextSupportedConfigs
-                    ?.browseEndpointContextMusicConfig?.pageType === 'MUSIC_PAGE_TYPE_TRACK_LYRICS'
-                ) {
-                  lyricsId = tabRenderer.endpoint.browseEndpoint.browseId;
-                  break;
-                }
-              }
-            }
-
-            if (lyricsId) {
-              const lyricsData = await (ytmusic as any).constructRequest('browse', { browseId: lyricsId });
-              const runs =
-                lyricsData?.contents?.sectionListRenderer?.contents?.[0]?.musicDescriptionShelfRenderer?.description
-                  ?.runs;
-              let lyricsText = null;
-
-              if (runs) {
-                lyricsText = runs.map((r: any) => r.text).join('');
-              }
-
-              if (lyricsText && !lyricsText.includes('Lyrics not available') && lyricsText.trim().length > 20) {
-                const parsedL = parsePlainLyrics(lyricsText, duration);
-                if (parsedL.length > 0) {
-                  return { synced: false, lyrics: parsedL, provider: 'YouTube Music' };
-                }
-              }
-            }
+          if (runs) {
+            lyricsText = runs.map((r: any) => r.text).join('');
           }
-        } catch {}
-        return null;
-      })()
-    );
+
+          if (lyricsText && !lyricsText.includes('Lyrics not available') && lyricsText.trim().length > 20) {
+            plainCandidatesText = { text: lyricsText, source: 'YouTube Music' };
+          }
+        }
+      }
+    } catch {}
   }
 
-  if (secondaryPromises.length > 0) {
-    const secondaryResults = await Promise.all(secondaryPromises);
-    const validSecondary = secondaryResults.find((r) => r !== null);
-    if (validSecondary) {
-      lyricsCache.set(cacheKey, validSecondary);
-      if (id) lyricsCache.set(`vid:${id}`, validSecondary);
-      return createSuccessResponse(validSecondary, `Lirik lagu berhasil dimuat (${validSecondary.provider})`, 200);
+  // -------------------------------------------------------------------------
+  // STAGE 3: Transform Plain Text to Timed Lyrics via Gemini AI
+  // -------------------------------------------------------------------------
+  if (plainCandidatesText) {
+    const plainLines = parsePlainLyrics(plainCandidatesText.text, duration);
+    if (plainLines.length > 0) {
+      const enrichedResult = await enrichPlainLyricsWithAI(
+        plainLines,
+        cleanTitle,
+        cleanArtist || primaryArtist,
+        duration,
+        plainCandidatesText.source
+      );
+
+      lyricsCache.set(cacheKey, enrichedResult);
+      if (id) lyricsCache.set(`vid:${id}`, enrichedResult);
+
+      const msg = enrichedResult.synced
+        ? `Lirik lagu berhasil disinkronkan (${enrichedResult.provider})`
+        : `Lirik lagu dimuat (${enrichedResult.provider})`;
+
+      return createSuccessResponse(enrichedResult, msg, 200, {
+        'Cache-Control': 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800',
+      });
     }
   }
 
   // If no lyrics could be found across all layers:
   return createSuccessResponse(
-    { synced: false, lyrics: [] },
+    { synced: false, lyrics: [], isLongAudio: false, provider: 'none' },
     'Lirik lagu belum tersedia',
     200
   );

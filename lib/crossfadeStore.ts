@@ -4,7 +4,6 @@ import { toast } from './toast';
 
 /**
  * Enterprise Audio Crossfade Store
- * Master Blueprint PMUSIC Architecture - Batch 2 (Poin 29)
  *
  * Guarantees:
  * 1. Persistent crossfade duration (0s, 2s, 4s, 6s, 8s, 12s).

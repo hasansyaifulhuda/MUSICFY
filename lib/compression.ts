@@ -1,6 +1,5 @@
 /**
  * Memory-Bound Lightweight Cache Compression Engine
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 64)
  *
  * Guarantees:
  * 1. 60-85% payload footprint reduction for large lyrics text and metadata objects.

@@ -1,6 +1,5 @@
 /**
  * Advanced Client-Side Request Deduplication & In-Flight Coalescing Engine
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 62)
  *
  * Guarantees:
  * 1. Single in-flight HTTP request across concurrent callers for identical queries/APIs.
@@ -111,3 +110,6 @@ export async function deduplicatedFetch<T = any>(
   }
   return clientDeduplicator.fetch<T>(url, init, cacheTtlMs);
 }
+
+export default deduplicatedFetch;
+

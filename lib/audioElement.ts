@@ -13,8 +13,8 @@ import { db } from './db';
 
 declare global {
   interface Window {
-    __PMUSIC_AUDIO_SINGLETON__?: HTMLAudioElement;
-    __PMUSIC_AUDIO_PLAY_PROMISE__?: Promise<void> | null;
+    __MUSICFY_AUDIO_SINGLETON__?: HTMLAudioElement;
+    __MUSICFY_AUDIO_PLAY_PROMISE__?: Promise<void> | null;
   }
 }
 
@@ -28,24 +28,24 @@ export function getPersistentAudioElement(): HTMLAudioElement | null {
   if (typeof window === 'undefined') return null;
 
   // 1. Check window global singleton reference
-  if (window.__PMUSIC_AUDIO_SINGLETON__) {
-    return window.__PMUSIC_AUDIO_SINGLETON__;
+  if (window.__MUSICFY_AUDIO_SINGLETON__) {
+    return window.__MUSICFY_AUDIO_SINGLETON__;
   }
 
   // 2. Check local memory instance
   if (memoryAudioInstance) {
-    window.__PMUSIC_AUDIO_SINGLETON__ = memoryAudioInstance;
+    window.__MUSICFY_AUDIO_SINGLETON__ = memoryAudioInstance;
     return memoryAudioInstance;
   }
 
   // 3. Check DOM for existing element (survives React unmounts & HMR)
-  let el = (document.getElementById('pmusic-persistent-audio') ||
+  let el = (document.getElementById('musicfy-persistent-audio') ||
     document.getElementById('sann-persistent-audio')) as HTMLAudioElement | null;
 
   if (!el) {
     el = document.createElement('audio');
-    el.id = 'pmusic-persistent-audio';
-    el.preload = 'auto';
+    el.id = 'musicfy-persistent-audio';
+    el.preload = 'metadata';
     el.setAttribute('playsinline', 'true');
     el.setAttribute('webkit-playsinline', 'true');
     el.crossOrigin = 'anonymous'; // Vital for Web Audio API / AudioContext without CORS taint
@@ -65,7 +65,7 @@ export function getPersistentAudioElement(): HTMLAudioElement | null {
     } else {
       // If DOM body is not yet ready, append on DOMContentLoaded
       window.addEventListener('DOMContentLoaded', () => {
-        if (!document.getElementById('pmusic-persistent-audio')) {
+        if (!document.getElementById('musicfy-persistent-audio')) {
           document.body.appendChild(el!);
         }
       }, { once: true });
@@ -73,7 +73,7 @@ export function getPersistentAudioElement(): HTMLAudioElement | null {
   }
 
   memoryAudioInstance = el;
-  window.__PMUSIC_AUDIO_SINGLETON__ = el;
+  window.__MUSICFY_AUDIO_SINGLETON__ = el;
   return el;
 }
 
@@ -84,22 +84,22 @@ export function getPersistentAudioElement(): HTMLAudioElement | null {
 export async function safePlayAudio(audio: HTMLAudioElement): Promise<boolean> {
   try {
     // If a play promise is already in flight, wait or reuse
-    if (window.__PMUSIC_AUDIO_PLAY_PROMISE__) {
+    if (window.__MUSICFY_AUDIO_PLAY_PROMISE__) {
       try {
-        await window.__PMUSIC_AUDIO_PLAY_PROMISE__;
+        await window.__MUSICFY_AUDIO_PLAY_PROMISE__;
       } catch {}
     }
 
     const promise = audio.play();
     if (promise !== undefined) {
-      window.__PMUSIC_AUDIO_PLAY_PROMISE__ = promise;
+      window.__MUSICFY_AUDIO_PLAY_PROMISE__ = promise;
       await promise;
-      window.__PMUSIC_AUDIO_PLAY_PROMISE__ = null;
+      window.__MUSICFY_AUDIO_PLAY_PROMISE__ = null;
       return true;
     }
     return true;
   } catch (err: any) {
-    window.__PMUSIC_AUDIO_PLAY_PROMISE__ = null;
+    window.__MUSICFY_AUDIO_PLAY_PROMISE__ = null;
     // Benign errors: AbortError (interrupted by load/pause) or NotAllowedError (autoplay blocked)
     if (err?.name === 'AbortError' || err?.name === 'NotAllowedError') {
       return false;
@@ -117,8 +117,8 @@ export function pauseAudioSafely(audio?: HTMLAudioElement | null): void {
   if (!el) return;
 
   try {
-    if (window.__PMUSIC_AUDIO_PLAY_PROMISE__) {
-      window.__PMUSIC_AUDIO_PLAY_PROMISE__
+    if (window.__MUSICFY_AUDIO_PLAY_PROMISE__) {
+      window.__MUSICFY_AUDIO_PLAY_PROMISE__
         .then(() => {
           el.pause();
         })
@@ -140,6 +140,19 @@ export function isAudioPlaying(audio?: HTMLAudioElement | null): boolean {
   return Boolean(!el.paused && !el.ended && el.currentTime > 0 && el.readyState > 2);
 }
 
+let activeFadeInterval: NodeJS.Timeout | null = null;
+
+/**
+ * Instantly aborts and cancels any active volume fade-in or fade-out timer intervals.
+ * Guarantees zero residual timer callbacks from fighting or attenuating audio volume during track repeat.
+ */
+export function cancelActiveFade(): void {
+  if (activeFadeInterval) {
+    clearInterval(activeFadeInterval);
+    activeFadeInterval = null;
+  }
+}
+
 /**
  * Resets audio element state cleanly (stops playback and unloads stream buffer).
  */
@@ -147,6 +160,7 @@ export function resetAudioElement(audio?: HTMLAudioElement | null): void {
   const el = audio || getPersistentAudioElement();
   if (!el) return;
 
+  cancelActiveFade();
   try {
     pauseAudioSafely(el);
     el.removeAttribute('src');
@@ -164,6 +178,8 @@ export async function safeFadeOut(
   const el = audio || getPersistentAudioElement();
   if (!el || el.paused || el.volume <= 0.05) return;
 
+  cancelActiveFade();
+
   const startVolume = el.volume;
   const steps = 12;
   const stepTime = Math.max(16, durationMs / steps);
@@ -171,7 +187,7 @@ export async function safeFadeOut(
 
   return new Promise((resolve) => {
     let currentStep = 0;
-    const interval = setInterval(() => {
+    activeFadeInterval = setInterval(() => {
       currentStep++;
       const nextVol = Math.max(0, startVolume - volumeStep * currentStep);
       try {
@@ -179,7 +195,7 @@ export async function safeFadeOut(
       } catch {}
 
       if (currentStep >= steps || nextVol <= 0.01) {
-        clearInterval(interval);
+        cancelActiveFade();
         try {
           el.volume = 0;
         } catch {}
@@ -200,6 +216,8 @@ export async function safeFadeIn(
   const el = audio || getPersistentAudioElement();
   if (!el || targetVolume <= 0) return;
 
+  cancelActiveFade();
+
   const boundedTarget = Math.max(0.01, Math.min(1.0, targetVolume));
   el.volume = 0;
   const steps = 12;
@@ -208,7 +226,7 @@ export async function safeFadeIn(
 
   return new Promise((resolve) => {
     let currentStep = 0;
-    const interval = setInterval(() => {
+    activeFadeInterval = setInterval(() => {
       currentStep++;
       const nextVol = Math.min(boundedTarget, volumeStep * currentStep);
       try {
@@ -216,7 +234,7 @@ export async function safeFadeIn(
       } catch {}
 
       if (currentStep >= steps || nextVol >= boundedTarget - 0.01) {
-        clearInterval(interval);
+        cancelActiveFade();
         try {
           el.volume = boundedTarget;
         } catch {}
@@ -231,11 +249,32 @@ export async function safeFadeIn(
  * Executed synchronously within physical user click/touch handlers
  * to guarantee browser Autoplay policy compliance across Chrome, Safari iOS, and Android.
  */
-export function playTrackImmediately(targetVid: string, autoPlay: boolean = true): void {
+export function playTrackImmediately(
+  targetVid: string,
+  autoPlay: boolean = true,
+  targetVolume?: number
+): void {
   if (typeof window === 'undefined' || !targetVid) return;
   try {
     const audio = getPersistentAudioElement();
     if (!audio) return;
+
+    cancelActiveFade();
+
+    // Lock master volume firmly to initial target to prevent gain attenuation / volume drops
+    if (typeof targetVolume === 'number' && Number.isFinite(targetVolume)) {
+      audio.volume = Math.max(0, Math.min(1, targetVolume));
+    } else {
+      try {
+        const raw = localStorage.getItem('pmusic_player_settings');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed?.volume === 'number') {
+            audio.volume = Math.max(0, Math.min(1, parsed.volume / 100));
+          }
+        }
+      } catch {}
+    }
 
     // If device is offline or track is stored in IndexedDB, do NOT set network stream URL!
     // MusicContext's loadAndPlayTrack will resolve the local Blob from IndexedDB directly.

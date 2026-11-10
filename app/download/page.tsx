@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { ArrowLeft, DownloadCloud, Play, Shuffle, Trash2, CheckCircle2, Music } from 'lucide-react';
 import { db, OfflineTrack } from '@/lib/db';
-import { Track } from '@/lib/store';
+import { Track, usePlayerStore } from '@/lib/store';
 import { useMusic } from '@/context/MusicContext';
 import { getHighResImage } from '@/lib/utils';
 import { toast } from '@/lib/toast';
@@ -45,22 +45,28 @@ function OfflineTrackThumbnail({ src, alt, priority }: { src: string; alt: strin
 
 export default function DownloadPage() {
   const router = useRouter();
-  const [offlineTracks, setOfflineTracks] = useState<OfflineTrack[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [offlineTracks, setOfflineTracks] = useState<OfflineTrack[]>(() =>
+    typeof window !== 'undefined' ? [...db.getCachedOfflineTracks()].reverse() : []
+  );
+  const [loading, setLoading] = useState(() =>
+    typeof window !== 'undefined' ? db.getCachedOfflineTracks().length === 0 : true
+  );
 
-  const { playTrack, currentTrack, isPlaying } = useMusic();
+  const { playTrack } = useMusic();
+  const currentVideoId = usePlayerStore((state) => state.currentTrack?.videoId);
+  const isPlaying = usePlayerStore((state) => state.isPlaying);
 
   const loadOfflineTracks = useCallback(async (silent = false) => {
     try {
-      if (!silent) setLoading(true);
+      if (!silent && offlineTracks.length === 0) setLoading(true);
       const data = await db.getOfflineTracks();
       setOfflineTracks([...data].reverse());
     } catch (err) {
       console.error('Failed to load offline tracks:', err);
     } finally {
-      if (!silent) setLoading(false);
+      setLoading(false);
     }
-  }, []);
+  }, [offlineTracks.length]);
 
   useEffect(() => {
     let mounted = true;
@@ -165,50 +171,59 @@ export default function DownloadPage() {
   return (
     <main className="min-h-screen pb-[calc(env(safe-area-inset-bottom,0px)+7rem)] select-none">
       {/* Sticky Header */}
-      <div className="sticky top-0 z-20 bg-black/75 backdrop-blur-md pt-[calc(env(safe-area-inset-top,0px)+1rem)] pb-4 px-4 md:px-8 border-b border-white/5 flex items-center justify-between">
-        <div className="flex items-center gap-4 flex-1 min-w-0">
-          <button
-            onClick={() => router.back()}
-            className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors cursor-pointer"
-            aria-label="Kembali"
-          >
-            <ArrowLeft className="w-6 h-6" />
-          </button>
-          <div>
-            <h1 className="text-xl md:text-2xl font-extrabold text-white tracking-tight">
-              Download
-            </h1>
-            <p className="text-xs text-[#b3b3b3] mt-0.5">
-              {offlineTracks.length} lagu tersimpan di memori perangkat
-            </p>
+      <div className="sticky top-0 z-20 bg-black/85 backdrop-blur-xl pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] pb-3 px-4 md:px-8 border-b border-white/5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 max-w-7xl mx-auto">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <button
+              onClick={() => router.back()}
+              className="p-2 -ml-1 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors cursor-pointer shrink-0"
+              aria-label="Kembali"
+              style={{ touchAction: 'manipulation' }}
+            >
+              <ArrowLeft className="w-5 h-5 sm:w-6 sm:h-6" />
+            </button>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-lg sm:text-2xl font-extrabold text-white tracking-tight truncate">
+                Lagu Diunduh
+              </h1>
+              <p className="text-xs text-[#b3b3b3] truncate mt-0.5">
+                {offlineTracks.length} lagu tersimpan di memori perangkat (Offline)
+              </p>
+            </div>
           </div>
-        </div>
 
-        {offlineTracks.length > 0 && (
-          <div className="flex items-center gap-2 sm:gap-3">
-            <button
-              onClick={handleClearAll}
-              className="text-xs text-white/60 hover:text-red-400 p-2 transition-colors cursor-pointer"
-              title="Bersihkan Semua Unduhan"
-            >
-              <Trash2 className="w-5 h-5" />
-            </button>
-            <button
-              onClick={handleShufflePlay}
-              className="w-9 h-9 sm:w-10 sm:h-10 bg-white/10 hover:bg-white/20 text-white rounded-full flex items-center justify-center transition-all active:scale-95 cursor-pointer"
-              title="Putar Acak Lagu Offline"
-            >
-              <Shuffle className="w-4 h-4" />
-            </button>
-            <button
-              onClick={handlePlayAll}
-              className="flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold text-xs md:text-sm rounded-full shadow-lg hover:scale-105 active:scale-95 transition-all cursor-pointer"
-            >
-              <Play className="w-4 h-4 fill-current" />
-              <span>Putar Semua</span>
-            </button>
-          </div>
-        )}
+          {offlineTracks.length > 0 && (
+            <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-3 shrink-0 w-full sm:w-auto pt-1 sm:pt-0 border-t sm:border-t-0 border-white/5">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <button
+                  onClick={handleClearAll}
+                  className="text-xs text-white/60 hover:text-red-400 p-2 transition-colors cursor-pointer rounded-full hover:bg-white/5 shrink-0"
+                  title="Bersihkan Semua Unduhan"
+                  style={{ touchAction: 'manipulation' }}
+                >
+                  <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
+                </button>
+                <button
+                  onClick={handleShufflePlay}
+                  className="w-9 h-9 sm:w-10 sm:h-10 bg-white/10 hover:bg-white/20 text-white rounded-full flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 border border-white/10"
+                  title="Putar Acak Lagu Offline"
+                  style={{ touchAction: 'manipulation' }}
+                >
+                  <Shuffle className="w-4 h-4" />
+                </button>
+              </div>
+
+              <button
+                onClick={handlePlayAll}
+                className="flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold text-xs sm:text-sm rounded-full shadow-lg hover:scale-105 active:scale-95 transition-all cursor-pointer shrink-0"
+                style={{ touchAction: 'manipulation' }}
+              >
+                <Play className="w-4 h-4 fill-current ml-0.5" />
+                <span className="whitespace-nowrap">Putar Semua</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Main Content */}
@@ -230,7 +245,7 @@ export default function DownloadPage() {
             itemHeight={76}
             overscan={6}
             renderItem={(track, index) => {
-              const isCurrent = currentTrack?.videoId === track.videoId;
+              const isCurrent = currentVideoId === track.videoId;
               const thumb =
                 (track as any).offlineThumbnail ||
                 getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120);

@@ -1,0 +1,14 @@
+name: musicfy/whitelist-streaming-traffic
+description: "Whitelist high-frequency audio streaming, lyrics polling, and Meilisearch queries from false-positive bans"
+filter: "evt.Meta.service == 'http' || evt.Meta.service == 'nginx'"
+whitelist:
+  reason: "Legitimate MusicFY music playback, HTTP range requests & search auto-complete"
+  expression:
+    # Whitelist media range streaming requests
+    - "evt.Parsed.request startsWith '/api/stream' && evt.Parsed.status in ['200', '206', '304']"
+    - "evt.Parsed.request startsWith '/api/audio' && evt.Parsed.status in ['200', '206', '304']"
+    - "evt.Parsed.request startsWith '/api/lyrics' && evt.Parsed.status in ['200', '304']"
+    - "evt.Parsed.request startsWith '/api/search' && evt.Parsed.status in ['200', '304']"
+    - "evt.Parsed.request startsWith '/api/suggest' && evt.Parsed.status in ['200', '304']"
+    - "evt.Parsed.request startsWith '/_next/static/'"
+    - "evt.Parsed.request startsWith '/workers/'"

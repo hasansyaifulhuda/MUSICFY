@@ -4,7 +4,6 @@ import { toast } from './toast';
 
 /**
  * Enterprise Audio Quality & Data Saver Store
- * Master Blueprint PMUSIC Architecture - Batch 2 (Poin 30)
  *
  * Guarantees:
  * 1. Persistent audio quality preference across sessions.

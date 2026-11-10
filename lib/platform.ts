@@ -124,6 +124,9 @@ export function applyPlatformScaling(): PlatformInfo {
 
   // Expose CSS variable for components needing explicit pixel adjustments
   root.style.setProperty('--platform-scale', String(info.scaleFactor));
+  root.style.setProperty('-webkit-text-size-adjust', '100%');
+  root.style.setProperty('text-size-adjust', '100%');
+  root.style.boxSizing = 'border-box';
 
   // Dynamically normalize root font-size for Windows to prevent oversized "zoom banget" UI
   if (info.isWindows && !info.isMobile) {

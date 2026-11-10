@@ -12,7 +12,6 @@ import { Play, Pause, SkipForward, Maximize2, X, Loader2 } from 'lucide-react';
 
 /**
  * Enterprise Responsive Floating Mini-Player Widget
- * Master Blueprint PMUSIC Architecture - Batch 2 (Poin 22)
  *
  * Guarantees:
  * 1. Persistent, draggable corner widget that remains active across all routes.
@@ -61,16 +60,23 @@ export const FloatingWidget = memo(function FloatingWidget() {
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.85, y: 30 }}
         transition={{ type: 'spring', damping: 20, stiffness: 260 }}
-        className="fixed bottom-24 right-4 sm:right-6 z-40 w-[300px] sm:w-[330px] bg-[#181818]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-2.5 shadow-2xl shadow-black/80 flex flex-col overflow-hidden select-none cursor-grab active:cursor-grabbing transform-gpu"
+        className="fixed bottom-24 right-4 sm:right-6 z-40 w-[300px] sm:w-[330px] glass-dock rounded-2xl p-2.5 shadow-2xl flex flex-col overflow-hidden select-none cursor-grab active:cursor-grabbing gpu-accelerated"
         style={{
-          boxShadow: '0 12px 40px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.08)',
+          boxShadow: '0 16px 48px rgba(0, 0, 0, 0.75), inset 0 1px 0 0 rgba(255, 255, 255, 0.15)',
+          transform: 'translate3d(0, 0, 0)',
+          willChange: 'transform',
+          touchAction: 'none',
         }}
       >
         <div className="flex items-center gap-3">
           {/* Artwork Thumbnail */}
           <div
+            onPointerDown={(e) => {
+              if (e.button === 0) setExpanded(true);
+            }}
             onClick={() => setExpanded(true)}
-            className="relative w-12 h-12 rounded-xl overflow-hidden shrink-0 shadow-md cursor-pointer group"
+            className="relative w-12 h-12 rounded-xl overflow-hidden shrink-0 shadow-md cursor-pointer group border border-white/10"
+            style={{ touchAction: 'manipulation' }}
           >
             <Image
               src={thumbnail}
@@ -89,7 +95,14 @@ export const FloatingWidget = memo(function FloatingWidget() {
           </div>
 
           {/* Track Name & Artist */}
-          <div className="flex-1 min-w-0 pr-1" onClick={() => setExpanded(true)}>
+          <div
+            className="flex-1 min-w-0 pr-1 cursor-pointer"
+            onPointerDown={(e) => {
+              if (e.button === 0) setExpanded(true);
+            }}
+            onClick={() => setExpanded(true)}
+            style={{ touchAction: 'manipulation' }}
+          >
             <MarqueeText
               text={currentTrack.name}
               className="text-white text-xs font-bold truncate tracking-tight hover:underline cursor-pointer"
@@ -100,8 +113,16 @@ export const FloatingWidget = memo(function FloatingWidget() {
           {/* Playback Controls Cluster */}
           <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
             <button
-              onClick={togglePlay}
+              onPointerDown={(e) => {
+                if (e.button === 0) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  togglePlay();
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
               className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shadow-md cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying && isBuffering ? (
@@ -114,24 +135,48 @@ export const FloatingWidget = memo(function FloatingWidget() {
             </button>
 
             <button
-              onClick={playNext}
+              onPointerDown={(e) => {
+                if (e.button === 0) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  playNext();
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
               className="p-1.5 text-white/70 hover:text-white transition-colors cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title="Berikutnya"
             >
               <SkipForward className="w-4 h-4 fill-current" />
             </button>
 
             <button
-              onClick={() => setExpanded(true)}
+              onPointerDown={(e) => {
+                if (e.button === 0) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setExpanded(true);
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
               className="p-1.5 text-white/50 hover:text-white transition-colors cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title="Buka Pemutar Penuh"
             >
               <Maximize2 className="w-3.5 h-3.5" />
             </button>
 
             <button
-              onClick={closeWidget}
+              onPointerDown={(e) => {
+                if (e.button === 0) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  closeWidget();
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
               className="p-1 text-white/40 hover:text-white transition-colors rounded-full hover:bg-white/10 cursor-pointer"
+              style={{ touchAction: 'manipulation' }}
               title="Tutup Widget"
             >
               <X className="w-3.5 h-3.5" />
@@ -150,3 +195,6 @@ export const FloatingWidget = memo(function FloatingWidget() {
     </AnimatePresence>
   );
 });
+
+export default FloatingWidget;
+

@@ -11,7 +11,6 @@ export interface AudioPresetDrawerProps {
 
 /**
  * Enterprise Audio Preset Quick Selector Drawer
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 82)
  *
  * Guarantees:
  * 1. Rapid 1-click preset switching (Flat, Bass Boost, Vocal, Pop, Rock, Electronic, etc.).
@@ -30,7 +29,11 @@ export const AudioPresetDrawer = memo(function AudioPresetDrawer({ className }: 
     <div className={cn('w-full py-2 px-1 flex items-center gap-2 overflow-x-auto no-scrollbar select-none', className)}>
       {/* Equalizer Modal Trigger Pill */}
       <button
+        onPointerDown={(e) => {
+          if (e.button === 0) openModal();
+        }}
         onClick={openModal}
+        style={{ touchAction: 'manipulation' }}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-semibold shrink-0 transition-colors cursor-pointer border border-white/10"
         title="Buka Equalizer Lengkap"
       >
@@ -44,7 +47,11 @@ export const AudioPresetDrawer = memo(function AudioPresetDrawer({ className }: 
         return (
           <button
             key={name}
+            onPointerDown={(e) => {
+              if (e.button === 0) setPreset(name);
+            }}
             onClick={() => setPreset(name)}
+            style={{ touchAction: 'manipulation' }}
             className={cn(
               'px-3 py-1.5 rounded-full text-xs font-medium shrink-0 transition-all cursor-pointer whitespace-nowrap',
               isCurrent

@@ -1,5 +1,11 @@
 apply plugin: 'com.android.application'
 
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
     namespace "com.musicfy.app"
     compileSdk rootProject.ext.compileSdkVersion
@@ -16,8 +22,26 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            def storeFilePath = System.getenv("KEYSTORE_FILE") ?: (keystoreProperties['storeFile'] ?: project.findProperty('RELEASE_STORE_FILE'))
+            if (storeFilePath) {
+                def kFile = file(storeFilePath)
+                if (kFile.exists()) {
+                    storeFile kFile
+                    storePassword System.getenv("KEYSTORE_PASSWORD") ?: (keystoreProperties['storePassword'] ?: project.findProperty('RELEASE_STORE_PASSWORD'))
+                    keyAlias System.getenv("KEY_ALIAS") ?: (keystoreProperties['keyAlias'] ?: project.findProperty('RELEASE_KEY_ALIAS'))
+                    keyPassword System.getenv("KEY_PASSWORD") ?: (keystoreProperties['keyPassword'] ?: project.findProperty('RELEASE_KEY_PASSWORD'))
+                }
+            }
+        }
+    }
     buildTypes {
         release {
+            def releaseSigningConfig = signingConfigs.release
+            if (releaseSigningConfig.storeFile != null && releaseSigningConfig.storeFile.exists()) {
+                signingConfig releaseSigningConfig
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

@@ -29,7 +29,7 @@ import dynamic from 'next/dynamic';
 import { CommunityPlaylistCard } from '@/components/CommunityPlaylistCard';
 import { HomeSkeleton } from '@/components/HomeSkeleton';
 import { Equalizer } from '@/components/Equalizer';
-import { prefetchArtist } from '@/lib/clientDataCache';
+import { prefetchArtist, getHomeCache, setHomeCache } from '@/lib/clientDataCache';
 
 const HorizontalScroll = dynamic(
   () => import('@/components/HorizontalScroll').then((m) => m.HorizontalScroll),
@@ -80,44 +80,105 @@ function formatDuration(seconds?: number | string): string {
   return `${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
-// In-memory cache for instant online home navigation without repeated network requests
+/**
+ * Fisher-Yates (Knuth) In-Place / Non-Mutating Shuffle Algorithm
+ * O(n) linear performance with unbiased distribution.
+ * Guarantees a fresh, dynamic playlist arrangement on every load/visit.
+ */
+function shuffleArray<T>(array: T[]): T[] {
+  if (!array || array.length <= 1) return array ? [...array] : [];
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = shuffled[i];
+    shuffled[i] = shuffled[j];
+    shuffled[j] = temp;
+  }
+  return shuffled;
+}
+
+// In-memory raw pools cache for dynamic on-the-fly randomization without static locking
 let homeCache: {
-  heroTracks: Track[];
-  speedDialTracks: Track[];
-  quickPicksTracks: Track[];
-  communityPlaylists: any[];
-  artists: any[];
-  categories: { key: string; title: string; type: 'song' | 'mixed'; items: any[] }[];
+  rawPools: Record<string, any[]>;
+  categoriesConfig: { key: string; title: string; type: 'song' | 'mixed'; items: any[] }[];
 } | null = null;
 
 export default function Home() {
   const router = useRouter();
   const isOnline = useOnlineStatus();
-  const { playTrack, currentTrack, isPlaying } = useMusic();
+  const { playTrack } = useMusic();
+  const currentVideoId = usePlayerStore((state) => state.currentTrack?.videoId);
+  const isPlaying = usePlayerStore((state) => state.isPlaying);
   const history = usePlayerStore((state) => state.history);
 
   // -------------------------------------------------------------
   // Offline State (IndexedDB)
   // -------------------------------------------------------------
-  const [offlineTracks, setOfflineTracks] = useState<OfflineTrack[]>([]);
-  const [offlineLoading, setOfflineLoading] = useState(true);
+  const [offlineTracks, setOfflineTracks] = useState<OfflineTrack[]>(() =>
+    typeof window !== 'undefined' ? db.getCachedOfflineTracks() : []
+  );
+  const [offlineLoading, setOfflineLoading] = useState(() =>
+    typeof window !== 'undefined' ? db.getCachedOfflineTracks().length === 0 : true
+  );
   const [searchQuery, setSearchQuery] = useState('');
 
   // -------------------------------------------------------------
   // Online State (API Stream & Shelves)
   // -------------------------------------------------------------
-  const [heroTracks, setHeroTracks] = useState<Track[]>(homeCache?.heroTracks || []);
-  const [speedDialTracks, setSpeedDialTracks] = useState<Track[]>(homeCache?.speedDialTracks || []);
-  const [quickPicksTracks, setQuickPicksTracks] = useState<Track[]>(homeCache?.quickPicksTracks || []);
-  const [communityPlaylists, setCommunityPlaylists] = useState<any[]>(homeCache?.communityPlaylists || []);
-  const [artists, setArtists] = useState<any[]>(homeCache?.artists || []);
+  const [heroTracks, setHeroTracks] = useState<Track[]>([]);
+  const [speedDialTracks, setSpeedDialTracks] = useState<Track[]>([]);
+  const [quickPicksTracks, setQuickPicksTracks] = useState<Track[]>([]);
+  const [communityPlaylists, setCommunityPlaylists] = useState<any[]>([]);
+  const [artists, setArtists] = useState<any[]>([]);
   const [categories, setCategories] = useState<
     { key: string; title: string; type: 'song' | 'mixed'; items: any[] }[]
-  >(homeCache?.categories || []);
-  const [onlineLoading, setOnlineLoading] = useState(!homeCache);
+  >([]);
+  const [onlineLoading, setOnlineLoading] = useState(true);
   const [activeOnlineFilter, setActiveOnlineFilter] = useState<string>('Semua');
   const [filterData, setFilterData] = useState<{ title: string; tracks: Track[] }[]>([]);
   const [loadingFilter, setLoadingFilter] = useState(false);
+
+  /**
+   * Applies dynamic Fisher-Yates shuffle across all music shelves.
+   * Ensures instant, unbiased randomization without hydration mismatch.
+   */
+  const applyRandomizedShelves = useCallback(
+    (
+      pools: Record<string, any[]>,
+      catsConfig: { key: string; title: string; type: 'song' | 'mixed'; items?: any[] }[]
+    ) => {
+      const heroes = shuffleArray(pools['hero'] || []).slice(0, 4);
+      const dials = shuffleArray(pools['speedDial'] || []).slice(0, 30);
+      const picks = shuffleArray(pools['quickPicks'] || []).slice(0, 16);
+      const playlists = shuffleArray(pools['community'] || []).slice(0, 10);
+      const arts = shuffleArray(pools['artists'] || []).slice(0, 12);
+
+      const cats = catsConfig.map((cat) => {
+        const poolItems = pools[cat.key] || cat.items || [];
+        return {
+          ...cat,
+          type: cat.type || ('song' as const),
+          items: shuffleArray(poolItems).slice(0, 12),
+        };
+      });
+
+      setHeroTracks(heroes);
+      setSpeedDialTracks(dials);
+      setQuickPicksTracks(picks);
+      setCommunityPlaylists(playlists);
+      setArtists(arts);
+      setCategories(cats);
+    },
+    []
+  );
+
+  const handleRandomizeHome = useCallback(() => {
+    const pools = homeCache || getHomeCache();
+    if (pools?.rawPools && pools.categoriesConfig?.length > 0) {
+      applyRandomizedShelves(pools.rawPools, pools.categoriesConfig);
+      toast.success('Rekomendasi Beranda diacak ulang!');
+    }
+  }, [applyRandomizedShelves]);
 
 
 
@@ -206,40 +267,24 @@ export default function Home() {
 
         if (cancelled) return;
 
-        let heroes: Track[] = [];
-        let dials: Track[] = [];
-        let picks: Track[] = [];
-        let playlists: any[] = [];
-        let arts: any[] = [];
-        const cats: { key: string; title: string; type: 'song' | 'mixed'; items: any[] }[] = [];
+        const rawPools: Record<string, any[]> = {};
+        const catsConfig: { key: string; title: string; type: 'song' | 'mixed'; items: any[] }[] = [];
 
         chunkResults.forEach(({ key, title, data }) => {
           if (!data || data.length === 0) return;
-          if (key === 'hero') heroes = data.slice(0, 4);
-          else if (key === 'speedDial') dials = data.slice(0, 30);
-          else if (key === 'quickPicks') picks = data.slice(0, 16);
-          else if (key === 'community') playlists = data.slice(0, 10);
-          else if (key === 'artists') arts = data.slice(0, 12);
-          else if (key.startsWith('cat') && title) {
-            cats.push({ key, title, type: 'song', items: data.slice(0, 10) });
+          rawPools[key] = data;
+          if (key.startsWith('cat') && title) {
+            catsConfig.push({ key, title, type: 'song', items: data });
           }
         });
 
-        setHeroTracks(heroes);
-        setSpeedDialTracks(dials);
-        setQuickPicksTracks(picks);
-        setCommunityPlaylists(playlists);
-        setArtists(arts);
-        setCategories(cats);
-
         homeCache = {
-          heroTracks: heroes,
-          speedDialTracks: dials,
-          quickPicksTracks: picks,
-          communityPlaylists: playlists,
-          artists: arts,
-          categories: cats,
+          rawPools,
+          categoriesConfig: catsConfig,
         };
+        setHomeCache(homeCache);
+
+        applyRandomizedShelves(rawPools, catsConfig);
       } catch (error) {
         console.warn('Failed to fetch home data:', error);
       } finally {
@@ -247,16 +292,19 @@ export default function Home() {
       }
     };
 
-    if (!homeCache || homeCache.categories.length === 0) {
-      fetchHomeData();
-    } else {
+    const cachedHome = homeCache || getHomeCache();
+    if (cachedHome?.rawPools && cachedHome.categoriesConfig?.length > 0) {
+      homeCache = cachedHome;
+      applyRandomizedShelves(cachedHome.rawPools, cachedHome.categoriesConfig);
       setOnlineLoading(false);
+    } else {
+      fetchHomeData();
     }
 
     return () => {
       cancelled = true;
     };
-  }, [isOnline]);
+  }, [isOnline, applyRandomizedShelves]);
 
   // Online Filter Query handling
   useEffect(() => {
@@ -279,8 +327,8 @@ export default function Home() {
           const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&type=song`);
           if (res.ok) {
             const raw = await res.json();
-            const data = Array.isArray(raw) ? raw : raw?.result || [];
-            results.push({ title, tracks: data.slice(0, 10) });
+            const data = (Array.isArray(raw) ? raw : raw?.result || []) as Track[];
+            results.push({ title, tracks: shuffleArray(data).slice(0, 12) });
           }
         }
 
@@ -366,32 +414,32 @@ export default function Home() {
     <main className="min-h-screen pt-4 pb-28 px-4 md:px-8 max-w-7xl mx-auto select-none">
       {/* 1. OFFLINE VIEW HEADER (When Offline) */}
       {!isOnline && (
-        <header className="flex items-center justify-between gap-4 mb-4 pt-1">
-          <div className="flex items-baseline gap-2.5">
-            <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight">
+        <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pt-1">
+          <div className="flex items-baseline gap-2.5 min-w-0">
+            <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight truncate">
               Lagu Unduhan
             </h1>
             {!offlineLoading && offlineTracks.length > 0 && (
-              <span className="text-xs text-white/40 font-medium">
+              <span className="text-xs text-white/40 font-medium shrink-0">
                 {filteredOfflineTracks.length} lagu
               </span>
             )}
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center flex-wrap gap-2 shrink-0">
             {filteredOfflineTracks.length > 0 && (
               <>
                 <button
                   onClick={handlePlayAllOffline}
-                  className="px-3.5 py-1.5 bg-[#1DB954] hover:bg-[#1ed760] text-black font-semibold text-xs rounded-full flex items-center gap-1.5 transition-transform active:scale-95 cursor-pointer shadow-sm"
+                  className="px-3.5 py-1.5 bg-[#1DB954] hover:bg-[#1ed760] text-black font-semibold text-xs rounded-full flex items-center gap-1.5 transition-transform active:scale-95 cursor-pointer shadow-sm shrink-0"
                   title="Putar Semua"
                 >
                   <Play className="w-3.5 h-3.5 fill-current ml-0.5" />
-                  <span className="hidden sm:inline">Putar Semua</span>
+                  <span className="inline">Putar Semua</span>
                 </button>
                 <button
                   onClick={handleShufflePlayOffline}
-                  className="p-2 bg-white/5 hover:bg-white/10 text-white/80 hover:text-white rounded-full border border-white/10 transition-colors cursor-pointer"
+                  className="p-2 bg-white/5 hover:bg-white/10 text-white/80 hover:text-white rounded-full border border-white/10 transition-colors cursor-pointer shrink-0"
                   title="Putar Acak"
                 >
                   <Shuffle className="w-3.5 h-3.5" />
@@ -402,7 +450,7 @@ export default function Home() {
             <Link
               href="/history"
               prefetch={false}
-              className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition-colors cursor-pointer border border-white/10"
+              className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition-colors cursor-pointer border border-white/10 shrink-0"
               title="Riwayat Pemutaran"
             >
               <History className="w-4 h-4" />
@@ -410,7 +458,7 @@ export default function Home() {
             <Link
               href="/download"
               prefetch={false}
-              className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition-colors cursor-pointer border border-white/10 relative"
+              className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition-colors cursor-pointer border border-white/10 relative shrink-0"
               title="Kelola Unduhan"
             >
               <DownloadCloud className="w-4 h-4" />
@@ -423,7 +471,7 @@ export default function Home() {
             <Link
               href="/settings"
               prefetch={false}
-              className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition-colors cursor-pointer border border-white/10"
+              className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full text-white/80 hover:text-white transition-colors cursor-pointer border border-white/10 shrink-0"
               title="Pengaturan"
             >
               <Settings className="w-4 h-4" />
@@ -446,11 +494,15 @@ export default function Home() {
                 return (
                   <button
                     key={pill}
+                    onPointerDown={(e) => {
+                      if (e.button === 0) setActiveOnlineFilter(pill);
+                    }}
                     onClick={() => setActiveOnlineFilter(pill)}
+                    style={{ touchAction: 'manipulation' }}
                     className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs md:text-sm font-bold transition-all select-none snap-start cursor-pointer shrink-0 ${
                       isActive
                         ? 'bg-white text-black shadow-md'
-                        : 'bg-[#242424] hover:bg-[#2a2a2a] text-white hover:text-white'
+                        : 'bg-white/10 hover:bg-white/15 text-white/80 hover:text-white border border-white/5'
                     }`}
                   >
                     {pill}
@@ -460,6 +512,14 @@ export default function Home() {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={handleRandomizeHome}
+                className="p-2.5 bg-white/5 hover:bg-white/10 active:scale-95 text-white/80 hover:text-white rounded-full transition-all cursor-pointer border border-white/10"
+                title="Acak Rekomendasi Beranda"
+                style={{ touchAction: 'manipulation' }}
+              >
+                <Shuffle className="w-4 h-4 text-[#1DB954]" />
+              </button>
               <Link
                 href="/history"
                 prefetch={true}
@@ -498,13 +558,19 @@ export default function Home() {
               <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2.5 md:gap-3">
                 {onlineQuickGridItems.map((track, idx) => {
                   const thumb = getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120);
-                  const isCurrent = currentTrack?.videoId === track.videoId;
+                  const isCurrent = currentVideoId === track.videoId;
                   return (
                     <div
                       key={`quick-grid-${track.videoId}-${idx}`}
+                      onPointerDown={(e) => {
+                        if (e.button === 0) playTrack(track, onlineQuickGridItems, 'similar', idx);
+                      }}
                       onClick={() => playTrack(track, onlineQuickGridItems, 'similar', idx)}
-                      className={`flex items-center transition-colors duration-200 rounded-[4px] md:rounded-[6px] overflow-hidden cursor-pointer group shadow-sm select-none relative ${
-                        isCurrent ? 'bg-white/[0.15]' : 'bg-white/[0.07] hover:bg-white/[0.14]'
+                      style={{ touchAction: 'manipulation' }}
+                      className={`flex items-center transition-all duration-200 rounded-xl overflow-hidden cursor-pointer group shadow-sm select-none relative border ${
+                        isCurrent
+                          ? 'bg-white/[0.18] border-white/20'
+                          : 'bg-white/[0.05] hover:bg-white/[0.10] border-white/[0.06]'
                       }`}
                     >
                       <div className="relative w-12 h-12 md:w-16 md:h-16 shrink-0 shadow bg-black/40">
@@ -514,7 +580,9 @@ export default function Home() {
                           fill
                           sizes="64px"
                           className="object-cover"
-                          priority={idx < 8}
+                          priority={idx < 3}
+                          loading={idx < 3 ? undefined : 'lazy'}
+                          decoding="async"
                         />
                       </div>
                       <div className="flex-1 min-w-0 px-3 flex items-center justify-between">
@@ -524,11 +592,18 @@ export default function Home() {
                           {track.name}
                         </span>
                         <button
+                          onPointerDown={(e) => {
+                            if (e.button === 0) {
+                              e.stopPropagation();
+                              playTrack(track, onlineQuickGridItems, 'similar', idx);
+                            }
+                          }}
                           onClick={(e) => {
                             e.stopPropagation();
                             playTrack(track, onlineQuickGridItems, 'similar', idx);
                           }}
-                          className="w-9 h-9 md:w-11 md:h-11 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-[0_8px_8px_rgba(0,0,0,0.3)] hover:scale-105 active:scale-95 transition-all duration-200 shrink-0 cursor-pointer"
+                          style={{ touchAction: 'manipulation' }}
+                          className="w-9 h-9 md:w-11 md:h-11 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-[0_8px_16px_rgba(29,185,84,0.4)] hover:scale-105 active:scale-95 transition-all duration-200 shrink-0 cursor-pointer"
                           title="Putar"
                         >
                           <Play className="w-4 h-4 md:w-5 md:h-5 fill-current ml-0.5" />
@@ -583,14 +658,18 @@ export default function Home() {
                             const art = Array.isArray(track.artist)
                               ? track.artist.map((a) => a.name).join(', ')
                               : track.artist?.name || 'Unknown Artist';
-                            const isCurrent = currentTrack?.videoId === track.videoId;
+                            const isCurrent = currentVideoId === track.videoId;
                             return (
                               <div
                                 key={`quickpicks-${track.videoId}-${j}`}
-                                className="flex items-center gap-3 cursor-pointer group hover:bg-white/10 p-2 rounded-md transition-colors select-none"
+                                className="flex items-center gap-3 cursor-pointer group hover:bg-white/[0.08] active:bg-white/[0.12] p-2 rounded-xl transition-all duration-150 select-none border border-transparent hover:border-white/5"
+                                onPointerDown={(e) => {
+                                  if (e.button === 0) playTrack(track, quickPicksTracks, 'similar');
+                                }}
                                 onClick={() => playTrack(track, quickPicksTracks, 'similar')}
+                                style={{ touchAction: 'manipulation' }}
                               >
-                                <div className="relative w-12 h-12 rounded-[4px] overflow-hidden shrink-0 shadow-md bg-white/5">
+                                <div className="relative w-12 h-12 rounded-xl overflow-hidden shrink-0 shadow-md bg-white/5 border border-white/5">
                                   <Image
                                     src={thumb}
                                     alt={track.name}
@@ -771,7 +850,7 @@ export default function Home() {
                 <div className="space-y-1">
                   {filteredOfflineTracks.map((item, index) => {
                     const track = item.track;
-                    const isCurrent = currentTrack?.videoId === track.videoId;
+                    const isCurrent = currentVideoId === track.videoId;
                     const thumb = getHighResImage(
                       track.thumbnails?.[track.thumbnails.length - 1]?.url,
                       120

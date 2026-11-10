@@ -7,3 +7,7 @@ coverage/
 !.env.example
 cookies*.txt
 storage/
+*.keystore
+*.jks
+keystore.properties
+release/Archive.zip

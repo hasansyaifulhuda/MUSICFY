@@ -78,6 +78,7 @@ export default function PlaylistPage() {
     return () => {
       active = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playlistId]);
 
   if (loading) {

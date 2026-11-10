@@ -10,6 +10,8 @@ interface CacheItem<T> {
   ttlMs: number;
 }
 
+const SESSION_CACHE_PREFIX = 'mfy_dc_';
+
 class ClientDataCache {
   private memoryCache = new Map<string, CacheItem<any>>();
   private inFlightRequests = new Map<string, Promise<any>>();
@@ -19,6 +21,7 @@ class ClientDataCache {
   public readonly TTL_METADATA = 1000 * 60 * 60 * 2; // 2 hours for Albums, Artists, Playlists
   public readonly TTL_SEARCH = 1000 * 60 * 15;        // 15 minutes for Search results
   public readonly TTL_SUGGEST = 1000 * 60 * 30;       // 30 minutes for Suggestions
+  public readonly TTL_HOME = 1000 * 60 * 30;          // 30 minutes for Home pools
 
   private getKey(prefix: string, id: string): string {
     return `${prefix}:${id.trim().toLowerCase()}`;
@@ -27,11 +30,33 @@ class ClientDataCache {
   public get<T = any>(prefix: string, id: string): T | null {
     if (!id || typeof window === 'undefined') return null;
     const key = this.getKey(prefix, id);
-    const item = this.memoryCache.get(key);
+    let item = this.memoryCache.get(key);
+
+    // If not in memory, check persistent sessionStorage (Instant 0ms Refresh)
+    if (!item) {
+      try {
+        const raw = window.sessionStorage.getItem(SESSION_CACHE_PREFIX + key);
+        if (raw) {
+          const parsed = JSON.parse(raw) as CacheItem<T>;
+          if (parsed && typeof parsed.timestamp === 'number') {
+            if (Date.now() - parsed.timestamp <= parsed.ttlMs) {
+              item = parsed;
+              this.memoryCache.set(key, parsed);
+            } else {
+              window.sessionStorage.removeItem(SESSION_CACHE_PREFIX + key);
+            }
+          }
+        }
+      } catch {}
+    }
+
     if (!item) return null;
 
     if (Date.now() - item.timestamp > item.ttlMs) {
       this.memoryCache.delete(key);
+      try {
+        window.sessionStorage.removeItem(SESSION_CACHE_PREFIX + key);
+      } catch {}
       return null;
     }
 
@@ -50,11 +75,32 @@ class ClientDataCache {
       if (oldestKey) this.memoryCache.delete(oldestKey);
     }
 
-    this.memoryCache.set(key, {
+    const item: CacheItem<T> = {
       data,
       timestamp: Date.now(),
       ttlMs,
-    });
+    };
+
+    this.memoryCache.set(key, item);
+
+    // Persist to sessionStorage for instant refresh across reloads
+    try {
+      window.sessionStorage.setItem(SESSION_CACHE_PREFIX + key, JSON.stringify(item));
+    } catch {
+      // If quota exceeded, safely evict oldest cache entries
+      try {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < window.sessionStorage.length; i++) {
+          const k = window.sessionStorage.key(i);
+          if (k && k.startsWith(SESSION_CACHE_PREFIX)) {
+            keysToRemove.push(k);
+            if (keysToRemove.length >= 5) break;
+          }
+        }
+        keysToRemove.forEach((k) => window.sessionStorage.removeItem(k));
+        window.sessionStorage.setItem(SESSION_CACHE_PREFIX + key, JSON.stringify(item));
+      } catch {}
+    }
   }
 
   public async fetchWithCache<T = any>(
@@ -94,10 +140,33 @@ class ClientDataCache {
   public clear(): void {
     this.memoryCache.clear();
     this.inFlightRequests.clear();
+    if (typeof window !== 'undefined') {
+      try {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < window.sessionStorage.length; i++) {
+          const k = window.sessionStorage.key(i);
+          if (k && k.startsWith(SESSION_CACHE_PREFIX)) {
+            keysToRemove.push(k);
+          }
+        }
+        keysToRemove.forEach((k) => window.sessionStorage.removeItem(k));
+      } catch {}
+    }
   }
 }
 
 export const clientCache = new ClientDataCache();
+
+// -------------------------------------------------------------
+// Home Cache (Raw Pools & Categories)
+// -------------------------------------------------------------
+export function getHomeCache() {
+  return clientCache.get('home', 'pools');
+}
+
+export function setHomeCache(data: any) {
+  clientCache.set('home', 'pools', data, clientCache.TTL_HOME);
+}
 
 // -------------------------------------------------------------
 // Albums Cache & Prefetch

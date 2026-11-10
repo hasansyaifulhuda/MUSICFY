@@ -1,11 +1,3 @@
-/**
- * PMUSIC Web Worker Client Controller
- * Master Blueprint PMUSIC Architecture - Phase 1.2 (Point 7)
- *
- * Bridges the UI thread with the background Web Worker,
- * providing non-blocking asynchronous lyrics parsing with transparent fallback.
- */
-
 import { LyricLine, normalizeLyrics } from './performance';
 
 interface PendingRequest {

@@ -4,7 +4,6 @@ import { toast } from './toast';
 
 /**
  * Enterprise Battery Saver & Low-Power Mode Integration
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 74)
  *
  * Guarantees:
  * 1. Proactive hardware battery telemetry via W3C Battery Status API.
@@ -51,14 +50,24 @@ export const useBatteryStore = create<BatteryState>((set, get) => ({
   batteryLevel: null,
   isCharging: null,
   isAutoLowPower: false,
-  isManualSaver: getInitialManualSaver(),
-  isLowPowerActive: getInitialManualSaver(),
+  isManualSaver: false,
+  isLowPowerActive: false,
 
   initBatteryListener: () => {
     if (typeof window === 'undefined') return;
 
+    let manualSaver = false;
+    try {
+      manualSaver = debouncedLocalStorageGet(BATTERY_SAVER_STORAGE_KEY) === 'true';
+    } catch {}
+
+    set({
+      isManualSaver: manualSaver,
+      isLowPowerActive: manualSaver,
+    });
+
     // Check initial DOM state
-    applyLowPowerDomAttribute(get().isLowPowerActive);
+    applyLowPowerDomAttribute(manualSaver);
 
     if ('getBattery' in navigator) {
       (navigator as any)

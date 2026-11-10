@@ -6,11 +6,13 @@ import { useRouter } from 'next/navigation';
 import { toast } from '@/lib/toast';
 
 /**
- * TAUTAN UNDUHAN APK EKSTERNAL
- * Silakan ganti '#' dengan URL Google Drive, MediaFire, atau hosting APK Anda
- * Contoh: const APK_DOWNLOAD_URL = 'https://drive.google.com/file/d/YOUR_FILE_ID/view?usp=sharing';
+ * TAUTAN UNDUHAN APK DINAMIS (ENV)
+ * Membaca nilai dari variabel environment NEXT_PUBLIC_APK_DOWNLOAD_URL
+ * dengan fallback aman ke tautan default jika belum dikonfigurasi.
  */
-const APK_DOWNLOAD_URL: string = 'https://drive.google.com/file/d/100mmJJQLUmOf8vNNB7KsQEj3OxewGifl/view?usp=sharing';
+const APK_DOWNLOAD_URL: string =
+  process.env.NEXT_PUBLIC_APK_DOWNLOAD_URL ||
+  'https://drive.google.com/file/d/1TUKa1p-0py84hvcV7CUvv2Bo5dpODBOb/view?usp=sharing';
 
 export default function InstallApkPage() {
   const router = useRouter();
@@ -79,7 +81,7 @@ export default function InstallApkPage() {
   const handleApkDownloadClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (!APK_DOWNLOAD_URL || APK_DOWNLOAD_URL === '#' || APK_DOWNLOAD_URL.trim() === '') {
       e.preventDefault();
-      toast.info('Tautan file .apk belum diatur. Silakan perbarui konstanta APK_DOWNLOAD_URL dengan link Google Drive / MediaFire Anda.');
+      toast.info('Tautan file .apk belum diatur di environment variable (NEXT_PUBLIC_APK_DOWNLOAD_URL).');
     }
   };
 

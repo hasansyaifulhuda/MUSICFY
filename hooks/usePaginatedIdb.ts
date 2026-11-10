@@ -11,7 +11,6 @@ export interface UsePaginatedIdbOptions {
 
 /**
  * Custom React Hook for Lazy Loading & Paginated IndexedDB reads
- * Master Blueprint PMUSIC Architecture - Phase 1.2 (Point 6)
  *
  * Traverses IndexedDB in memory-efficient chunks, keeping browser heap RAM minimal.
  */

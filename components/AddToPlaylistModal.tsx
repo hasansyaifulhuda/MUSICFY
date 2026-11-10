@@ -77,17 +77,25 @@ export function AddToPlaylistModal() {
       role="dialog"
       aria-modal="true"
       aria-label="Tambahkan ke Playlist"
-      className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-0"
+      className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-md p-4 sm:p-0"
       onClick={() => setTrackToAdd(null)}
     >
       <div
-        className="bg-[#242424] w-full sm:w-[420px] max-h-[80vh] rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden shadow-2xl border border-white/10 transform-gpu"
+        className="glass-panel w-full sm:w-[420px] max-h-[80vh] rounded-t-3xl sm:rounded-3xl flex flex-col overflow-hidden shadow-2xl border border-white/15 transform-gpu gpu-accelerated"
         onClick={(e) => e.stopPropagation()}
+        style={{
+          transform: 'translate3d(0, 0, 0)',
+          willChange: 'transform',
+        }}
       >
         <div className="flex items-center justify-between p-4 border-b border-white/10">
           <h2 className="text-base font-bold text-white tracking-tight">Tambahkan ke Playlist</h2>
           <button
+            onPointerDown={(e) => {
+              if (e.button === 0) setTrackToAdd(null);
+            }}
             onClick={() => setTrackToAdd(null)}
+            style={{ touchAction: 'manipulation' }}
             className="p-1.5 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
@@ -196,3 +204,6 @@ export function AddToPlaylistModal() {
     </div>
   );
 }
+
+export default AddToPlaylistModal;
+

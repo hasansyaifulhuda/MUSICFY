@@ -66,7 +66,7 @@ export async function GET(request: Request) {
       'Saran pencarian berhasil diambil',
       200,
       {
-        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+        'Cache-Control': 'public, max-age=1800, s-maxage=3600, stale-while-revalidate=86400',
       }
     );
   } catch (error) {

@@ -18,7 +18,6 @@ export interface FloatingLyricsPillProps {
 
 /**
  * Enterprise Compact Floating Lyrics Pill (Quick View)
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 80)
  *
  * Guarantees:
  * 1. Minimalist floating pill anchored above the Mobile Mini-Player.
@@ -217,3 +216,6 @@ export const FloatingLyricsPill = memo(function FloatingLyricsPill({
     </AnimatePresence>
   );
 });
+
+export default FloatingLyricsPill;
+

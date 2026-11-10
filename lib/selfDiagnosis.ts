@@ -5,7 +5,6 @@ import { toast } from './toast';
 
 /**
  * Enterprise Client-Side Crash Telemetry & Self-Diagnosis Engine
- * Master Blueprint PMUSIC Architecture - Batch 3 (Poin 76)
  *
  * Guarantees:
  * 1. Proactive detection of corrupted localStorage JSON keys or invalid player states.
@@ -73,7 +72,7 @@ export interface TelemetryLog {
 const TELEMETRY_STORAGE_KEY = 'pmusic_crash_telemetry_v1';
 const MAX_TELEMETRY_LOGS = 30;
 
-// Known JSON keys used by PMUSIC that must be valid JSON
+// Known JSON keys used by MusicFY that must be valid JSON
 const MONITORED_JSON_KEYS = [
   'player-storage',
   'pmusic_audio_session_v1',

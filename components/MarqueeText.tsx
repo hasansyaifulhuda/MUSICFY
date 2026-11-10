@@ -75,3 +75,6 @@ export const MarqueeText = memo(function MarqueeText({
     </div>
   );
 });
+
+export default MarqueeText;
+

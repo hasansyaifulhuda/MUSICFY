@@ -5,7 +5,7 @@ import { db, RecentSearch } from '@/lib/db';
 import { TrackItem } from '@/components/TrackItem';
 import { ArtistItem } from '@/components/ArtistItem';
 import { VirtualTrackList } from '@/components/VirtualTrackList';
-import { Search as SearchIcon, ArrowLeft, X, ArrowUpLeft, History } from 'lucide-react';
+import { Search as SearchIcon, ArrowLeft, X, ArrowUpLeft, History, Sparkles } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { SearchSkeleton } from '@/components/SearchSkeleton';
 import { useDebounce } from '@/hooks/usePerformance';
@@ -19,11 +19,26 @@ import {
   prefetchSuggestions,
 } from '@/lib/clientDataCache';
 
-let searchStateCache = {
-  query: '',
-  results: [] as any[],
-  activeTab: 'Semua',
-};
+function getInitialSearchState() {
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = window.sessionStorage.getItem('mfy_search_state');
+      if (raw) return JSON.parse(raw);
+    } catch {}
+  }
+  return { query: '', results: [] as any[], activeTab: 'Semua' };
+}
+
+let searchStateCache = getInitialSearchState();
+
+function saveSearchState(state: { query: string; results: any[]; activeTab: string }) {
+  searchStateCache = state;
+  if (typeof window !== 'undefined') {
+    try {
+      window.sessionStorage.setItem('mfy_search_state', JSON.stringify(state));
+    } catch {}
+  }
+}
 
 export default function Search() {
   const [query, setQuery] = useState(searchStateCache.query);
@@ -33,6 +48,7 @@ export default function Search() {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState(searchStateCache.activeTab);
   const [isFocused, setIsFocused] = useState(false);
+  const [aiInterpretation, setAiInterpretation] = useState<any>(null);
   const router = useRouter();
 
   const tabs = ['Semua', 'Lagu', 'Video', 'Album', 'Artis'];
@@ -115,13 +131,38 @@ export default function Search() {
     if (cachedResults && cachedResults.length > 0) {
       setResults(cachedResults);
       setLoading(false);
-      searchStateCache = { query: cleanQ, results: cachedResults, activeTab };
+      saveSearchState({ query: cleanQ, results: cachedResults, activeTab });
       return;
     }
 
     setLoading(true);
+    setAiInterpretation(null);
 
-    // If offline: search locally within downloaded IndexedDB tracks (Batch 3 - Poin 72)
+    // AI Natural Language Search Detection
+    const isNaturalLanguage =
+      cleanQ.split(/\s+/).length >= 4 ||
+      /\b(lagu|cewek|cowok|wanita|pria|serak|tahun|viral|anime|soundtrack|jedag|mirip|ingat|lirik|santai|tempo)\b/i.test(cleanQ);
+
+    if (isNaturalLanguage && navigator.onLine) {
+      try {
+        const aiRes = await fetch(`/api/ai/search?q=${encodeURIComponent(cleanQ)}`);
+        if (aiRes.ok) {
+          const aiData = await aiRes.json();
+          const payload = aiData?.data || aiData?.result;
+          if (payload?.tracks && payload.tracks.length > 0) {
+            setResults(payload.tracks);
+            setAiInterpretation(payload.interpretation);
+            setCachedSearch(cleanQ, 'all', payload.tracks);
+            saveSearchState({ query: cleanQ, results: payload.tracks, activeTab });
+            setLoading(false);
+            return;
+          }
+        }
+      } catch (aiErr) {
+        console.warn('AI search request failed, falling back to standard search:', aiErr);
+      }
+    }
+
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       try {
         const localMatches = await db.searchLocalOffline(cleanQ);
@@ -142,7 +183,7 @@ export default function Search() {
       const data = Array.isArray(raw) ? raw : raw?.result || [];
       setResults(data);
       setCachedSearch(cleanQ, 'all', data);
-      searchStateCache = { query: cleanQ, results: data, activeTab };
+      saveSearchState({ query: cleanQ, results: data, activeTab });
     } catch (error) {
       console.error('Search request error:', error);
       // Fallback to local offline tracks if online search fails
@@ -190,15 +231,23 @@ export default function Search() {
             onBlur={() => setTimeout(() => setIsFocused(false), 200)}
             placeholder="Apa yang ingin Anda dengarkan?"
             autoFocus
-            className="w-full bg-[#242424] hover:bg-[#2a2a2a] text-white rounded-full py-3 pl-11 pr-10 focus:outline-none focus:ring-2 focus:ring-white/40 placeholder:text-[#b3b3b3] transition-all border border-white/5 text-sm font-medium"
+            className="w-full bg-white/[0.06] hover:bg-white/[0.1] text-white rounded-full py-3 pl-11 pr-10 focus:outline-none focus:ring-2 focus:ring-[#1DB954]/50 placeholder:text-[#b3b3b3] transition-all border border-white/10 text-sm font-medium backdrop-blur-md"
+            style={{ touchAction: 'manipulation' }}
           />
           {query && (
             <button
               type="button"
+              onPointerDown={(e) => {
+                if (e.button === 0) {
+                  setQuery('');
+                  setResults([]);
+                }
+              }}
               onClick={() => {
                 setQuery('');
                 setResults([]);
               }}
+              style={{ touchAction: 'manipulation' }}
               className="absolute right-3.5 top-1/2 -translate-y-1/2 text-white/50 hover:text-white cursor-pointer"
             >
               <X className="w-5 h-5" />
@@ -207,18 +256,27 @@ export default function Search() {
         </form>
       </div>
 
-      {/* PMUSIC Pills Navigation */}
       <div className="flex overflow-x-auto no-scrollbar gap-2 mb-6 px-4 md:px-8 snap-x snap-mandatory">
         {tabs.map((tab) => {
           const isActive = activeTab === tab;
           return (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onPointerDown={(e) => {
+                if (e.button === 0) {
+                  setActiveTab(tab);
+                  saveSearchState({ query, results, activeTab: tab });
+                }
+              }}
+              onClick={() => {
+                setActiveTab(tab);
+                saveSearchState({ query, results, activeTab: tab });
+              }}
+              style={{ touchAction: 'manipulation' }}
               className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs md:text-sm font-bold transition-all select-none snap-start cursor-pointer ${
                 isActive
                   ? 'bg-white text-black shadow-md'
-                  : 'bg-[#242424] hover:bg-[#2a2a2a] text-white'
+                  : 'bg-white/10 hover:bg-white/15 text-white/80 hover:text-white border border-white/5'
               }`}
             >
               {tab}
@@ -233,11 +291,18 @@ export default function Search() {
           {suggestions.map((suggestion, index) => (
             <div
               key={`suggestion-${suggestion}-${index}`}
-              className="flex items-center justify-between px-3 py-2.5 hover:bg-white/10 rounded-lg cursor-pointer transition-colors"
+              className="flex items-center justify-between px-3 py-2.5 hover:bg-white/10 rounded-xl cursor-pointer transition-colors"
+              onPointerDown={(e) => {
+                if (e.button === 0) {
+                  setQuery(suggestion);
+                  handleSearch(suggestion);
+                }
+              }}
               onClick={() => {
                 setQuery(suggestion);
                 handleSearch(suggestion);
               }}
+              style={{ touchAction: 'manipulation' }}
             >
               <div className="flex items-center gap-3">
                 <SearchIcon className="w-4 h-4 text-white/50" />
@@ -278,6 +343,45 @@ export default function Search() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* AI Smart Interpretation Banner */}
+      {aiInterpretation && (
+        <div className="mb-5 px-4 md:px-8">
+          <div className="p-3.5 rounded-2xl glass-panel border border-emerald-500/40 bg-emerald-950/20 backdrop-blur-xl flex items-start gap-3 shadow-lg shadow-emerald-500/5">
+            <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+              <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-emerald-300">Hasil Analisis AI Gemini:</span>
+                {aiInterpretation.decade && (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">
+                    {aiInterpretation.decade}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-white/90 mt-1 leading-relaxed">{aiInterpretation.explanation}</p>
+              {Array.isArray(aiInterpretation.candidates) && aiInterpretation.candidates.length > 1 && (
+                <div className="flex flex-wrap gap-1.5 mt-2.5">
+                  {aiInterpretation.candidates.map((c: string, idx: number) => (
+                    <button
+                      key={`cand-${idx}`}
+                      type="button"
+                      onPointerDown={(e) => {
+                        if (e.button === 0) handleSearch(c);
+                      }}
+                      className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-emerald-300/90 hover:text-emerald-300 rounded-full text-[11px] font-medium border border-white/10 transition-colors cursor-pointer"
+                      style={{ touchAction: 'manipulation' }}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -252,8 +252,8 @@ export const usePlayerStore = create<PlayerState>()(
           newIndex = 0;
         }
 
-        // Trigger immediate synchronous autoplay on user gesture
-        playTrackImmediately(targetId, true);
+        // Trigger immediate synchronous autoplay on user gesture with locked master volume
+        playTrackImmediately(targetId, true, (state.volume ?? 100) / 100);
 
         // Sanitize repeatMode: reset 'one' to 'off' when explicitly picking a new song
         const nextRepeatMode = state.repeatMode === 'one' ? 'off' : state.repeatMode;
@@ -286,7 +286,7 @@ export const usePlayerStore = create<PlayerState>()(
           const newPlayCounts = { ...state.playCounts };
           newPlayCounts[nextTrack.videoId] = (newPlayCounts[nextTrack.videoId] || 0) + 1;
 
-          playTrackImmediately(extractVideoId(nextTrack), true);
+          playTrackImmediately(extractVideoId(nextTrack), true, (state.volume ?? 100) / 100);
 
           set({
             currentTrack: nextTrack,
@@ -308,7 +308,7 @@ export const usePlayerStore = create<PlayerState>()(
           const newPlayCounts = { ...state.playCounts };
           newPlayCounts[nextTrack.videoId] = (newPlayCounts[nextTrack.videoId] || 0) + 1;
 
-          playTrackImmediately(extractVideoId(nextTrack), true);
+          playTrackImmediately(extractVideoId(nextTrack), true, (state.volume ?? 100) / 100);
 
           set({
             currentTrack: nextTrack,
@@ -363,7 +363,7 @@ export const usePlayerStore = create<PlayerState>()(
                       finalNextTracks = [nextTrack, ...others];
                     }
 
-                    playTrackImmediately(extractVideoId(nextTrack), true);
+                    playTrackImmediately(extractVideoId(nextTrack), true, (state.volume ?? 100) / 100);
 
                     set({
                       queue: [...queue, ...finalNextTracks],
@@ -387,7 +387,7 @@ export const usePlayerStore = create<PlayerState>()(
           const { repeatMode } = get();
           if (repeatMode === 'all' && queue.length > 0) {
             const nextTrack = queue[0];
-            playTrackImmediately(extractVideoId(nextTrack), true);
+            playTrackImmediately(extractVideoId(nextTrack), true, (get().volume ?? 100) / 100);
             set({
               currentTrack: nextTrack,
               queueIndex: 0,
@@ -418,7 +418,7 @@ export const usePlayerStore = create<PlayerState>()(
           const newPlayCounts = { ...state.playCounts };
           newPlayCounts[prevTrack.videoId] = (newPlayCounts[prevTrack.videoId] || 0) + 1;
 
-          playTrackImmediately(extractVideoId(prevTrack), true);
+          playTrackImmediately(extractVideoId(prevTrack), true, (state.volume ?? 100) / 100);
 
           set({
             currentTrack: prevTrack,
@@ -440,7 +440,7 @@ export const usePlayerStore = create<PlayerState>()(
           const newPlayCounts = { ...state.playCounts };
           newPlayCounts[prevTrack.videoId] = (newPlayCounts[prevTrack.videoId] || 0) + 1;
 
-          playTrackImmediately(extractVideoId(prevTrack), true);
+          playTrackImmediately(extractVideoId(prevTrack), true, (state.volume ?? 100) / 100);
 
           set({
             currentTrack: prevTrack,
@@ -467,7 +467,7 @@ export const usePlayerStore = create<PlayerState>()(
         const newPlayCounts = { ...state.playCounts };
         newPlayCounts[targetTrack.videoId] = (newPlayCounts[targetTrack.videoId] || 0) + 1;
 
-        playTrackImmediately(extractVideoId(targetTrack), true);
+        playTrackImmediately(extractVideoId(targetTrack), true, (state.volume ?? 100) / 100);
 
         set({
           currentTrack: targetTrack,
