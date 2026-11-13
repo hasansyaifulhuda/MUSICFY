@@ -1,0 +1,66 @@
+{
+  "name": "MusicFY",
+  "short_name": "MusicFY",
+  "description": "MusicFY - Pemutar Musik Modern dengan lirik tersinkronisasi, pemutaran latar belakang tanpa henti, dan mode offline.",
+  "start_url": "/",
+  "id": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "window-controls-overlay", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "lang": "id",
+  "dir": "ltr",
+  "categories": ["music", "entertainment", "audio"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Cari Musik",
+      "short_name": "Cari",
+      "description": "Cari jutaan lagu dan artis favorit",
+      "url": "/search",
+      "icons": [{ "src": "/icon.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Lagu Offline",
+      "short_name": "Unduhan",
+      "description": "Buka lagu yang tersimpan di perangkat",
+      "url": "/download",
+      "icons": [{ "src": "/icon.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Koleksi Saya",
+      "short_name": "Koleksi",
+      "description": "Daftar putar dan lagu yang disukai",
+      "url": "/library",
+      "icons": [{ "src": "/icon.png", "sizes": "192x192" }]
+    }
+  ]
+}

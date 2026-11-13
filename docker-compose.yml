@@ -1,0 +1,104 @@
+services:
+  # ----------------------------------------------------------------------------
+  # MusicFY - Full-Stack Next.js Music Streaming & PWA Application
+  # ----------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: musicfy-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - COOKIE_ROTATION_BATCH_SIZE=5
+      - COOKIE_SELECTION_STRATEGY=rotate
+      - MEILISEARCH_HOST=http://meilisearch:7700
+      - MEILISEARCH_API_KEY=${MEILISEARCH_API_KEY:-}
+    volumes:
+      # Mount cookie files dynamically so multi-cookie rotation works out of the box
+      - ./cookies.txt:/app/cookies.txt:ro
+      - ./storage:/app/storage
+      - ./logs:/app/logs
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------------------
+  # Meilisearch - Ultra-fast Search Engine with Typo Tolerance (<50ms)
+  # ----------------------------------------------------------------------------
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: musicfy-meilisearch
+    restart: unless-stopped
+    ports:
+      # Bound strictly to 127.0.0.1 for server security
+      - "127.0.0.1:7700:7700"
+    environment:
+      - MEILI_ENV=production
+      - MEILI_MASTER_KEY=${MEILISEARCH_API_KEY:-}
+      - MEILI_NO_ANALYTICS=true
+      - MEILI_MAX_INDEXING_MEMORY=500Mb
+      - MEILI_MAX_INDEXING_THREADS=2
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:7700/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ----------------------------------------------------------------------------
+  # PostgreSQL 15 - Relational Database for Umami Analytics
+  # ----------------------------------------------------------------------------
+  umami-db:
+    image: postgres:15-alpine
+    container_name: musicfy-umami-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=umami
+      - POSTGRES_USER=umami
+      - POSTGRES_PASSWORD=${UMAMI_DB_PASSWORD:-umami_secure_pass_2026}
+    volumes:
+      - umami_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ----------------------------------------------------------------------------
+  # Umami Analytics - Privacy-friendly & Lightweight Web Telemetry
+  # ----------------------------------------------------------------------------
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    container_name: musicfy-umami
+    restart: unless-stopped
+    depends_on:
+      umami-db:
+        condition: service_healthy
+    ports:
+      # Bound strictly to 127.0.0.1 for reverse-proxy routing
+      - "127.0.0.1:3001:3000"
+    environment:
+      - DATABASE_URL=postgresql://umami:${UMAMI_DB_PASSWORD:-umami_secure_pass_2026}@umami-db:5432/umami
+      - DATABASE_TYPE=postgresql
+      - APP_SECRET=${UMAMI_APP_SECRET:-umami_secret_key_random_2026}
+      - TRACKER_SCRIPT_NAME=analytics
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/heartbeat || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  meilisearch_data:
+    name: musicfy_meilisearch_data
+  umami_pg_data:
+    name: musicfy_umami_pg_data

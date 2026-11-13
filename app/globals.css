@@ -1,0 +1,436 @@
+@import "tailwindcss";
+
+:root {
+  --accent-color: #1DB954;
+  --accent-rgb: 29, 185, 84;
+  --accent-hover: #1ed760;
+  --bg-primary: #0A0A0A;
+  --bg-surface: #121212;
+  --bg-card: #181818;
+  --bg-elevated: #282828;
+}
+
+html, body {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+button, a, [role="button"], input, select {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.text-accent {
+  color: var(--accent-color) !important;
+}
+.bg-accent {
+  background-color: var(--accent-color) !important;
+}
+.border-accent {
+  border-color: var(--accent-color) !important;
+}
+.fill-accent {
+  fill: var(--accent-color) !important;
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .spotify-scrollbar::-webkit-scrollbar,
+  .musicfy-scrollbar::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .spotify-scrollbar::-webkit-scrollbar-track,
+  .musicfy-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .spotify-scrollbar::-webkit-scrollbar-thumb,
+  .musicfy-scrollbar::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.2);
+    border-radius: 9999px;
+  }
+  .spotify-scrollbar::-webkit-scrollbar-thumb:hover,
+  .musicfy-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.4);
+  }
+  
+  @keyframes marquee {
+    0%, 15% {
+      transform: translate3d(0, 0, 0);
+    }
+    85%, 100% {
+      transform: translate3d(calc(-50% - 1rem), 0, 0);
+    }
+  }
+
+  .animate-marquee {
+    animation: marquee 12s linear infinite;
+    will-change: transform;
+  }
+
+  @keyframes glass-shimmer {
+    0% {
+      transform: translate3d(-100%, 0, 0);
+    }
+    100% {
+      transform: translate3d(100%, 0, 0);
+    }
+  }
+
+  .animate-shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .animate-shimmer::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    transform: translate3d(-100%, 0, 0);
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.08) 50%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    animation: glass-shimmer 1.8s infinite ease-in-out;
+    will-change: transform;
+    pointer-events: none;
+  }
+
+  /* GPU Hardware Acceleration */
+  .gpu-accelerated,
+  .hardware-accelerated {
+    transform: translate3d(0, 0, 0);
+    -webkit-transform: translate3d(0, 0, 0);
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    perspective: 1000px;
+    -webkit-perspective: 1000px;
+    will-change: transform, opacity;
+  }
+
+  /* Page Transition GPU Wrapper */
+  .page-transition-gpu {
+    transform: translate3d(0, 0, 0);
+    -webkit-transform: translate3d(0, 0, 0);
+    will-change: transform, opacity;
+    backface-visibility: hidden;
+  }
+
+  /* Glassmorphism System (Spotify & Apple Music aesthetic) */
+  .glass-panel {
+    background: rgba(18, 18, 18, 0.72);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+  }
+
+  .glass-dock {
+    background: rgba(22, 22, 24, 0.82);
+    backdrop-filter: blur(32px) saturate(190%);
+    -webkit-backdrop-filter: blur(32px) saturate(190%);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65), inset 0 1px 0 0 rgba(255, 255, 255, 0.16);
+  }
+
+  .glass-pill {
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .glass-card {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    transition: all 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .glass-card:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.14);
+    transform: translate3d(0, -2px, 0);
+  }
+
+  .glass-header {
+    background: rgba(10, 10, 10, 0.65);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .scroll-smooth-gpu {
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    transform: translate3d(0, 0, 0);
+    backface-visibility: hidden;
+  }
+
+  .content-auto {
+    content-visibility: auto;
+    contain-intrinsic-size: 0 58px;
+    contain: layout style paint;
+  }
+  .contain-paint {
+    contain: paint;
+  }
+  .contain-layout {
+    contain: layout;
+  }
+  .contain-strict {
+    contain: strict;
+  }
+  .contain-content {
+    contain: content;
+  }
+
+  [data-tab-hidden="true"] .animate-marquee,
+  [data-tab-hidden="true"] .animate-spin,
+  [data-tab-hidden="true"] .animate-pulse,
+  [data-tab-hidden="true"] .animate-shimmer::after {
+    animation-play-state: paused !important;
+  }
+
+  .lyrics-mask {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(0, 0, 0, 0.8) 8%,
+      black 16%,
+      black 84%,
+      rgba(0, 0, 0, 0.8) 92%,
+      transparent 100%
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(0, 0, 0, 0.8) 8%,
+      black 16%,
+      black 84%,
+      rgba(0, 0, 0, 0.8) 92%,
+      transparent 100%
+    );
+  }
+
+  /* MusicFY Spotify & Apple Music Lyrics Typography & Color Hierarchy */
+  .musicfy-lyric-item {
+    color: #A1A1AA !important;
+    -webkit-text-fill-color: #A1A1AA !important;
+    transition: color 0.3s ease, opacity 0.3s ease, transform 0.35s cubic-bezier(0.25, 1, 0.5, 1);
+    will-change: transform, opacity;
+    text-rendering: optimizeLegibility;
+  }
+
+  .musicfy-lyric-item p,
+  .musicfy-lyric-item span {
+    color: inherit;
+    -webkit-text-fill-color: inherit;
+  }
+
+  /* Active Lyric: Pure White #FFFFFF, Opacity 100%, Font Weight 800 */
+  .musicfy-lyric-item.lyric-active,
+  .musicfy-lyric-item.lyric-active p,
+  .musicfy-lyric-item.lyric-active span {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    opacity: 1 !important;
+    font-weight: 800 !important;
+  }
+
+  /* Inactive Lyric - Previous: Soft Gray #A1A1AA, Opacity ~35%, Font Weight 500 */
+  .musicfy-lyric-item.lyric-prev,
+  .musicfy-lyric-item.lyric-prev p,
+  .musicfy-lyric-item.lyric-prev span {
+    color: #A1A1AA !important;
+    -webkit-text-fill-color: #A1A1AA !important;
+    opacity: 0.35 !important;
+    font-weight: 500 !important;
+  }
+
+  /* Inactive Lyric - Next: Soft Gray #A1A1AA, Opacity ~45%, Font Weight 500 */
+  .musicfy-lyric-item.lyric-next,
+  .musicfy-lyric-item.lyric-next p,
+  .musicfy-lyric-item.lyric-next span {
+    color: #A1A1AA !important;
+    -webkit-text-fill-color: #A1A1AA !important;
+    opacity: 0.45 !important;
+    font-weight: 500 !important;
+  }
+
+  /* Inactive Lyric - Distant: Soft Gray #A1A1AA, Opacity ~20%, Font Weight 500 */
+  .musicfy-lyric-item.lyric-distant,
+  .musicfy-lyric-item.lyric-distant p,
+  .musicfy-lyric-item.lyric-distant span {
+    color: #A1A1AA !important;
+    -webkit-text-fill-color: #A1A1AA !important;
+    opacity: 0.20 !important;
+    font-weight: 500 !important;
+  }
+
+  /* Inactive Lyric Hover */
+  .musicfy-lyric-item:not(.lyric-active):hover,
+  .musicfy-lyric-item:not(.lyric-active):hover p,
+  .musicfy-lyric-item:not(.lyric-active):hover span {
+    opacity: 0.85 !important;
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+  }
+
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 16px);
+  }
+}
+
+/* Universal Box-Sizing & Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  box-sizing: border-box;
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -moz-text-size-adjust: 100%;
+  -ms-text-size-adjust: 100%;
+  color-scheme: dark;
+  scroll-behavior: smooth;
+  -webkit-tap-highlight-color: transparent;
+  text-rendering: optimizeLegibility;
+}
+
+/* Windows OS DPI & High-DPI Cross-Platform Scaling Normalization
+ * Standardizes Windows 125%/150% display scaling so that all components,
+ * typography, margins, and grids render identically and proportionally to Debian/Linux.
+ */
+html[data-platform="windows"]:not([data-is-mobile="true"]),
+html[data-is-windows-desktop="true"] {
+  font-size: clamp(12.5px, 0.88vw + 3px, 14.5px);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  letter-spacing: -0.01em;
+}
+
+@media (min-width: 1024px) {
+  html[data-platform="windows"]:not([data-is-mobile="true"]),
+  html[data-is-windows-desktop="true"] {
+    font-size: clamp(13px, 0.82vw + 3.8px, 14.2px);
+  }
+}
+
+@media (min-width: 1536px) {
+  html[data-platform="windows"]:not([data-is-mobile="true"]),
+  html[data-is-windows-desktop="true"] {
+    font-size: clamp(13.5px, 0.72vw + 4px, 14.8px);
+  }
+}
+
+/* High-DPI Desktop (DPI >= 120 / scaling >= 125%) media-query fallback */
+@media screen and (min-width: 1024px) and (-webkit-min-device-pixel-ratio: 1.2),
+       screen and (min-width: 1024px) and (min-resolution: 115dpi) {
+  html:not([data-platform="linux"]):not([data-platform="debian"]):not([data-is-apk="true"]) {
+    font-size: clamp(13px, 0.85vw + 3.5px, 14.5px);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+}
+
+html[data-platform="linux"],
+html[data-platform="debian"] {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html[data-is-apk="true"] {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-size: 1rem;
+  line-height: 1.5;
+  background-color: #000000;
+  color: #FFFFFF;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* 0-delay instant pointer response and touch-action manipulation across all interactive controls */
+button,
+a,
+[role="button"],
+input,
+select,
+textarea,
+.interactive,
+.interactive-item,
+nav a,
+nav button {
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  a:active,
+  button:active,
+  [role="button"]:active {
+    opacity: 0.86;
+    transform: scale3d(0.97, 0.97, 1);
+    transition: transform 0.05s ease, opacity 0.05s ease;
+  }
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  background: transparent;
+  touch-action: manipulation;
+}
+input[type="range"]:focus {
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+}
+
+[data-nextjs-dev-tools-indicator],
+[data-nextjs-toast-wrapper],
+nextjs-portal,
+#nextjs-dev-tools-indicator,
+div[data-nextjs-indicator-root] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
