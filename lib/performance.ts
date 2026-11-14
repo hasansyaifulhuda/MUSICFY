@@ -207,51 +207,11 @@ export function normalizeLyrics(rawLyrics: any, trackDuration?: number): LyricLi
 
 /**
  * Fuzzy Timestamp Matching & Duration Interpolation
- * Handles plain text lyrics without timestamps or partially synchronized lines.
- * Uses character & syllable weight estimation to distribute lines evenly across the song duration.
+ * Preserves authentic timestamps without fabricating linear estimates.
  */
-export function interpolateLyricsTimestamps(lyrics: LyricLine[], trackDuration?: number): LyricLine[] {
+export function interpolateLyricsTimestamps(lyrics: LyricLine[]): LyricLine[] {
   if (!Array.isArray(lyrics) || lyrics.length === 0) return [];
-  const duration = trackDuration && trackDuration > 10 ? trackDuration : 180;
-
-  const allZero = lyrics.every((l) => l.time === 0);
-  if (allZero) {
-    const introOffset = Math.min(15, Math.max(6, duration * 0.05));
-    const availableTime = Math.max(10, duration - introOffset - 5);
-
-    const totalChars = lyrics.reduce((acc, l) => acc + Math.max(10, l.text.length), 0);
-    let accumulatedTime = introOffset;
-
-    return lyrics.map((l) => {
-      const lineTime = Math.round(accumulatedTime * 100) / 100;
-      const weight = Math.max(10, l.text.length) / totalChars;
-      accumulatedTime += weight * availableTime;
-      return {
-        time: lineTime,
-        text: l.text,
-      };
-    });
-  }
-
-  const result: LyricLine[] = [...lyrics];
-  for (let i = 0; i < result.length; i++) {
-    if (result[i].time === 0 && i > 0) {
-      let nextAnchor = -1;
-      for (let j = i + 1; j < result.length; j++) {
-        if (result[j].time > 0) {
-          nextAnchor = j;
-          break;
-        }
-      }
-      const prevTime = result[i - 1].time;
-      const nextTime = nextAnchor !== -1 ? result[nextAnchor].time : duration - 2;
-      const gapSteps = (nextAnchor !== -1 ? nextAnchor : result.length) - i + 1;
-      const stepDelta = Math.max(0.5, (nextTime - prevTime) / gapSteps);
-      result[i].time = Math.round((prevTime + stepDelta) * 100) / 100;
-    }
-  }
-
-  return result.sort((a, b) => a.time - b.time);
+  return lyrics;
 }
 
 /**

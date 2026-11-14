@@ -48,9 +48,15 @@ export function getLyricPosition(idx: number, activeIndex: number): LyricPositio
  */
 function formatTranslation(text?: string): string {
   if (!text) return '';
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  const cleaned = trimmed.replace(/^[\(\（\[\{]\s*|\s*[\)\）\]\}]$/g, '').trim();
+  let cleaned = text.trim();
+  if (!cleaned) return '';
+  while (
+    (cleaned.startsWith('(') && cleaned.endsWith(')')) ||
+    (cleaned.startsWith('（') && cleaned.endsWith('）')) ||
+    (cleaned.startsWith('[') && cleaned.endsWith(']'))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
   if (!cleaned) return '';
   return `(${cleaned})`;
 }
@@ -150,9 +156,9 @@ const LyricRow = memo(
           {text}
         </p>
 
-        {/* 2. Lirik Terjemahan & Romaji: Spacing 8-12px (mt-2 sm:mt-2.5), Silver-Gray #A1A1AA, 65-75% font size (text-sm sm:text-base md:text-lg), (Terjemahan) */}
+        {/* 2. Lirik Terjemahan & Romaji: Spacing mt-1.5 sm:mt-2, Pure White with lower opacity, 60-70% font size */}
         {hasTrans && (
-          <div className="mt-2 sm:mt-2.5 flex flex-col items-center gap-0.5 animate-in fade-in duration-200">
+          <div className="mt-1.5 sm:mt-2 flex flex-col items-center gap-0.5 animate-in fade-in duration-200">
             {romaji && (
               <p
                 className="text-xs sm:text-sm font-medium tracking-wide select-none"
@@ -170,13 +176,13 @@ const LyricRow = memo(
                 className={cn(
                   'musicfy-lyric-translation text-center select-none leading-relaxed tracking-normal',
                   'text-sm sm:text-base md:text-lg',
-                  isRowActive ? 'font-semibold' : 'font-medium'
+                  isRowActive ? 'font-medium' : 'font-normal'
                 )}
                 style={{
-                  color: '#A1A1AA',
-                  WebkitTextFillColor: '#A1A1AA',
-                  fontWeight: isRowActive ? 600 : 500,
-                  opacity: isRowActive ? 0.9 : 0.65,
+                  color: '#FFFFFF',
+                  WebkitTextFillColor: '#FFFFFF',
+                  fontWeight: isRowActive ? 500 : 400,
+                  opacity: isRowActive ? 0.75 : 0.50,
                 }}
               >
                 {formattedTrans}

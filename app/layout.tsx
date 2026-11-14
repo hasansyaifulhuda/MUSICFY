@@ -42,7 +42,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="id" className="dark" data-scroll-behavior="smooth" suppressHydrationWarning>
       <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         {/* Resource Hints & DNS Prefetching to eliminate DNS lookup latency */}
         <link rel="preconnect" href="https://shanz.my.id" crossOrigin="anonymous" />
         <link rel="dns-prefetch" href="https://shanz.my.id" />

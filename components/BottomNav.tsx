@@ -21,7 +21,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
-import { useEqualizerStore } from '@/lib/audioEffects';
 import { useSleepTimerStore, formatRemainingTimer } from '@/lib/sleepTimerStore';
 
 interface DrawerShortcutItem {
@@ -63,9 +62,6 @@ export const BottomNav = memo(function BottomNav() {
 
   const [isMounted, setIsMounted] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-
-  const openEqualizer = useEqualizerStore((state) => state.openModal);
-  const isEqualizerActive = useEqualizerStore((state) => state.isEnabled);
 
   const openSleepTimer = useSleepTimerStore((state) => state.openModal);
   const isSleepTimerActive = useSleepTimerStore((state) => state.isActive);
@@ -121,17 +117,6 @@ export const BottomNav = memo(function BottomNav() {
         prefetch: true,
       },
       {
-        name: 'Equalizer Audio',
-        desc: 'Kustomisasi bass & frekuensi',
-        action: () => {
-          closeDrawer();
-          openEqualizer();
-        },
-        icon: SlidersHorizontal,
-        badge: isMounted && isEqualizerActive ? 'Aktif' : null,
-        isActive: isMounted && isEqualizerActive,
-      },
-      {
         name: 'Sleep Timer',
         desc: 'Waktu mundur penghenti musik',
         action: () => {
@@ -159,7 +144,7 @@ export const BottomNav = memo(function BottomNav() {
         prefetch: false,
       },
     ],
-    [isMounted, closeDrawer, openEqualizer, isEqualizerActive, openSleepTimer, isSleepTimerActive]
+    [isMounted, closeDrawer, openSleepTimer, isSleepTimerActive]
   );
 
   const isDrawerRouteActive = useMemo(
@@ -243,7 +228,7 @@ export const BottomNav = memo(function BottomNav() {
                 )}
                 strokeWidth={isDrawerOpen || isDrawerRouteActive ? 2.5 : 1.8}
               />
-              {isMounted && (isEqualizerActive || isSleepTimerActive) && (
+              {isMounted && isSleepTimerActive && (
                 <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-[#1DB954] ring-2 ring-black animate-pulse" />
               )}
             </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, memo } from 'react';
+import { useState, useEffect, memo, useCallback } from 'react';
 import { Play, Check, PlusSquare, Radio } from 'lucide-react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
@@ -8,6 +8,7 @@ import { usePlayerStore, Track } from '@/lib/store';
 import { db } from '@/lib/db';
 import { MarqueeText } from './MarqueeText';
 import { getCachedPlaylist, setCachedPlaylist, prefetchPlaylist, prefetchNavigation } from '@/lib/clientDataCache';
+import { useTapGesture } from '@/hooks/useTapGesture';
 
 interface PlaylistData {
   playlistId: string;
@@ -58,6 +59,19 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
     };
   }, [playlistId]);
 
+  const playlistIdentifier = playlist?.playlistId;
+  const handleNavigate = useCallback(() => {
+    if (playlistIdentifier) {
+      router.push(`/playlist/${playlistIdentifier}`);
+    }
+  }, [router, playlistIdentifier]);
+
+  const tapGesture = useTapGesture({
+    onTap: handleNavigate,
+    threshold: 8,
+    disabled: loading || !playlist,
+  });
+
   if (loading) {
     return (
       <div className="w-[300px] md:w-[320px] bg-[#181818] rounded-2xl p-4 shrink-0 snap-center flex flex-col animate-pulse border border-white/5">
@@ -91,14 +105,14 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
 
   const handlePlay = (e: React.MouseEvent | React.PointerEvent) => {
     e.stopPropagation();
-    if (playlist.videos && playlist.videos.length > 0) {
+    if (playlist?.videos && playlist.videos.length > 0) {
       playTrack(playlist.videos[0], playlist.videos, 'playlist');
     }
   };
 
   const handleAdd = async (e: React.MouseEvent | React.PointerEvent) => {
     e.stopPropagation();
-    if (!added) {
+    if (!added && playlist) {
       await db.addPlaylist({
         id: playlist.playlistId,
         name: playlist.name,
@@ -111,27 +125,19 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
 
   const handleRadio = (e: React.MouseEvent | React.PointerEvent) => {
     e.stopPropagation();
-    if (playlist.videos && playlist.videos.length > 0) {
+    if (playlist?.videos && playlist.videos.length > 0) {
       playTrack(playlist.videos[0], [], 'similar');
     }
   };
 
-  const handleClick = () => {
-    router.push(`/playlist/${playlist.playlistId}`);
-  };
-
-  const displayTracks = playlist.videos?.slice(0, 3) || [];
+  const displayTracks = playlist?.videos?.slice(0, 3) || [];
 
   return (
     <div
-      onPointerDown={(e) => {
-        if (e.button === 0) handleClick();
-      }}
-      onClick={handleClick}
+      {...tapGesture}
       onMouseEnter={() => prefetchNavigation(router, `/playlist/${playlist.playlistId}`, 'playlist', playlist.playlistId)}
       onTouchStart={() => prefetchNavigation(router, `/playlist/${playlist.playlistId}`, 'playlist', playlist.playlistId)}
       style={{
-        touchAction: 'manipulation',
         transform: 'translate3d(0, 0, 0)',
         willChange: 'transform',
       }}
@@ -144,7 +150,7 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
               {playlist.videos.slice(0, 4).map((track, i) => (
                 <div key={i} className="relative w-full h-full">
                   <Image
-                    src={track.thumbnails?.[track.thumbnails.length - 1]?.url || 'https://picsum.photos/100/100'}
+                    src={track.thumbnails?.[track.thumbnails.length - 1]?.url || '/icon.png'}
                     alt={track.name}
                     fill
                     sizes="40px"
@@ -157,7 +163,7 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
             </div>
           ) : (
             <Image
-              src={playlist.thumbnails?.[playlist.thumbnails.length - 1]?.url || 'https://picsum.photos/200/200'}
+              src={playlist.thumbnails?.[playlist.thumbnails.length - 1]?.url || '/icon.png'}
               alt={playlist.name}
               fill
               sizes="80px"
@@ -178,7 +184,7 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
           <div key={i} className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-white/[0.06] transition-colors">
             <div className="w-9 h-9 rounded-lg overflow-hidden relative shrink-0 bg-white/5 border border-white/5">
               <Image
-                src={track.thumbnails?.[track.thumbnails.length - 1]?.url || 'https://picsum.photos/60/60'}
+                src={track.thumbnails?.[track.thumbnails.length - 1]?.url || '/icon.png'}
                 alt={track.name}
                 fill
                 sizes="36px"
@@ -200,22 +206,16 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
       <div className="flex items-center justify-between mt-auto pt-2.5 border-t border-white/5">
         <div className="flex items-center gap-2">
           <button
-            onPointerDown={(e) => {
-              if (e.button === 0) handlePlay(e);
-            }}
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={handlePlay}
-            style={{ touchAction: 'manipulation' }}
             className="w-11 h-11 bg-[#1DB954] hover:bg-[#1ed760] text-black rounded-full flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-md shadow-[#1DB954]/25 cursor-pointer"
             title="Putar Playlist"
           >
             <Play className="w-5 h-5 fill-current ml-0.5" />
           </button>
           <button
-            onPointerDown={(e) => {
-              if (e.button === 0) handleRadio(e);
-            }}
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={handleRadio}
-            style={{ touchAction: 'manipulation' }}
             className="w-9 h-9 bg-white/10 hover:bg-white/20 text-white rounded-full flex items-center justify-center transition-colors cursor-pointer"
             title="Mulai Radio"
           >
@@ -223,11 +223,8 @@ export const CommunityPlaylistCard = memo(function CommunityPlaylistCard({ playl
           </button>
         </div>
         <button
-          onPointerDown={(e) => {
-            if (e.button === 0) handleAdd(e);
-          }}
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={handleAdd}
-          style={{ touchAction: 'manipulation' }}
           className="w-9 h-9 bg-white/10 hover:bg-white/20 text-white rounded-full flex items-center justify-center transition-colors cursor-pointer"
           title={added ? 'Tersimpan di Koleksi' : 'Simpan ke Koleksi'}
         >

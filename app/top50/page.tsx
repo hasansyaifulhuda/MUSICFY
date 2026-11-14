@@ -1,12 +1,188 @@
 'use client';
 
-import { ArrowLeft, Search, Play, Shuffle, X, Clock, Heart, EllipsisVertical as MoreVertical } from 'lucide-react';
+import { ArrowLeft, Search, Play, Shuffle, X, Clock, Heart, MoreHorizontal, Music } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { usePlayerStore, Track } from '@/lib/store';
 import Image from 'next/image';
-import { getHighResImage } from '@/lib/utils';
-import { useEffect, useState, useMemo } from 'react';
+import { getHighResImage, cn } from '@/lib/utils';
+import { useEffect, useState, useMemo, useCallback, memo } from 'react';
 import { MarqueeText } from '@/components/MarqueeText';
+import { useTapGesture } from '@/hooks/useTapGesture';
+import { useMusic } from '@/context/MusicContext';
+import { useContextMenuStore } from '@/lib/contextMenuStore';
+
+const Top50TrackItem = memo(function Top50TrackItem({
+  track,
+  index,
+  filteredTracks,
+}: {
+  track: Track;
+  index: number;
+  filteredTracks: Track[];
+}) {
+  const playTrack = usePlayerStore((state) => state.playTrack);
+  const isCurrent = usePlayerStore((state) => state.currentTrack?.videoId === track.videoId);
+  const isPlayingCurrent = usePlayerStore(
+    (state) => state.isPlaying && state.currentTrack?.videoId === track.videoId
+  );
+  const openContextMenu = useContextMenuStore((state) => state.openContextMenu);
+  const { isLiked, toggleLike } = useMusic();
+  const [imgError, setImgError] = useState(false);
+
+  const liked = Boolean(track?.videoId && isLiked(track.videoId));
+
+  const artistName = useMemo(
+    () =>
+      Array.isArray(track.artist)
+        ? track.artist.map((a: any) => a.name).join(', ')
+        : track.artist?.name || 'Unknown Artist',
+    [track.artist]
+  );
+  const thumb = useMemo(
+    () => getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120),
+    [track.thumbnails]
+  );
+
+  const handlePlay = useCallback(() => {
+    playTrack(track, filteredTracks, 'playlist');
+  }, [playTrack, track, filteredTracks]);
+
+  const handleLongPress = useCallback(
+    (coords: { x: number; y: number }) => {
+      openContextMenu(track, coords);
+    },
+    [openContextMenu, track]
+  );
+
+  const tapGesture = useTapGesture({
+    onTap: handlePlay,
+    onLongPress: handleLongPress,
+    threshold: 8,
+  });
+
+  const handleLikePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+  }, []);
+
+  const handleLikeClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (track) {
+        toggleLike(track);
+      }
+    },
+    [track, toggleLike]
+  );
+
+  const handleOptionsPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      openContextMenu(track, { x: rect.left - 140, y: rect.bottom + 6 });
+    },
+    [openContextMenu, track]
+  );
+
+  return (
+    <div
+      {...tapGesture}
+      className={cn(
+        "flex items-center py-2.5 px-3 md:py-2.5 md:px-3.5 rounded-xl hover:bg-white/[0.06] active:bg-white/[0.10] transition-colors duration-150 cursor-pointer group select-none border-b border-white/[0.04] last:border-b-0",
+        isCurrent && "bg-white/[0.05]"
+      )}
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+    >
+      <div className="w-7 text-center text-white/40 group-hover:text-white/80 font-mono text-xs md:text-sm shrink-0 mr-1 tabular-nums">
+        {isPlayingCurrent ? (
+          <div className="flex gap-0.5 items-end h-3 justify-center">
+            <div className="w-1 bg-[#1DB954] animate-[bounce_0.8s_infinite_0ms]" />
+            <div className="w-1 bg-[#1DB954] animate-[bounce_0.8s_infinite_200ms]" />
+            <div className="w-1 bg-[#1DB954] animate-[bounce_0.8s_infinite_400ms]" />
+          </div>
+        ) : (
+          index + 1
+        )}
+      </div>
+
+      <div className="relative w-11 h-11 sm:w-12 sm:h-12 rounded-lg overflow-hidden shrink-0 shadow-sm bg-white/5 border border-white/[0.06]">
+        {thumb && !imgError ? (
+          <Image
+            src={thumb}
+            alt={track.name}
+            fill
+            sizes="48px"
+            loading="lazy"
+            decoding="async"
+            className="object-cover"
+            onError={() => setImgError(true)}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-white/[0.08] text-white/30">
+            <Music className="w-5 h-5" />
+          </div>
+        )}
+        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+          <Play className="w-4 h-4 fill-white text-white ml-0.5" />
+        </div>
+      </div>
+
+      <div className="ml-3 sm:ml-3.5 flex-1 min-w-0 pr-2">
+        <MarqueeText
+          text={track.name}
+          className={`font-semibold text-sm leading-snug tracking-tight transition-colors ${
+            isCurrent ? 'text-[#1DB954]' : 'text-white group-hover:text-white'
+          }`}
+        />
+        <p className="text-xs text-white/60 truncate group-hover:text-white/80 transition-colors mt-0.5">
+          {artistName}
+        </p>
+      </div>
+
+      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+        {track.duration ? (
+          <span className="text-[11px] sm:text-xs text-white/40 font-mono tabular-nums shrink-0 px-1 sm:px-2">
+            {Math.floor(track.duration / 60)}:{(track.duration % 60).toString().padStart(2, '0')}
+          </span>
+        ) : null}
+
+        <button
+          type="button"
+          onPointerDown={handleLikePointerDown}
+          onClick={handleLikeClick}
+          className="p-1.5 sm:p-2 text-white/40 hover:text-white transition-all cursor-pointer rounded-lg hover:bg-white/10 active:scale-90 shrink-0"
+          title={liked ? 'Hapus dari Lagu Disukai' : 'Sukai Lagu'}
+          aria-label={liked ? 'Hapus dari Lagu Disukai' : 'Sukai Lagu'}
+          style={{ touchAction: 'manipulation' }}
+        >
+          <Heart
+            className={cn(
+              'w-4 h-4 transition-transform duration-150',
+              liked ? 'fill-[#1DB954] text-[#1DB954] scale-105' : 'hover:scale-110'
+            )}
+          />
+        </button>
+
+        <button
+          type="button"
+          onPointerDown={handleOptionsPointerDown}
+          onClick={(e) => e.stopPropagation()}
+          className="p-1.5 sm:p-2 text-white/40 hover:text-white transition-colors cursor-pointer rounded-lg hover:bg-white/10 shrink-0"
+          title="Opsi"
+          aria-label="Opsi lagu"
+          style={{ touchAction: 'manipulation' }}
+        >
+          <MoreHorizontal className="w-4 h-4 sm:w-5 sm:h-5" />
+        </button>
+      </div>
+    </div>
+  );
+});
 
 export default function Top50Page() {
   const router = useRouter();
@@ -65,8 +241,8 @@ export default function Top50Page() {
 
   const coverImage =
     topTracks.length > 0
-      ? getHighResImage(topTracks[0].thumbnails?.[topTracks[0].thumbnails.length - 1]?.url, 800)
-      : 'https://picsum.photos/seed/top50/800/800';
+      ? getHighResImage(topTracks[0].thumbnails?.[topTracks[0].thumbnails.length - 1]?.url, 800) || '/icon.png'
+      : '/icon.png';
 
   const handleShufflePlay = () => {
     if (topTracks.length === 0) return;
@@ -154,57 +330,14 @@ export default function Top50Page() {
 
       {/* Track List */}
       <div className="space-y-1">
-        {filteredTracks.map((track, index) => {
-          const artistName = Array.isArray(track.artist)
-            ? track.artist.map((a) => a.name).join(', ')
-            : track.artist?.name || 'Unknown Artist';
-          const thumb = getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 100);
-
-          return (
-            <div
-              key={track.videoId + index}
-              className="flex items-center gap-3.5 py-2.5 px-3 rounded-lg hover:bg-white/10 transition-colors cursor-pointer group select-none"
-              onClick={() => playTrack(track, filteredTracks, 'playlist')}
-            >
-              <div className="w-7 text-center text-[#b3b3b3] group-hover:text-white font-mono text-sm shrink-0">
-                {index + 1}
-              </div>
-              <div className="relative w-11 h-11 rounded-[4px] overflow-hidden shrink-0 shadow bg-white/5">
-                <Image
-                  src={thumb}
-                  alt={track.name}
-                  fill
-                  sizes="44px"
-                  loading="lazy"
-                  decoding="async"
-                  className="object-cover"
-                />
-                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                  <Play className="w-4 h-4 fill-white text-white ml-0.5" />
-                </div>
-              </div>
-              <div className="flex-1 min-w-0 pr-2">
-                <MarqueeText text={track.name} className="text-white font-semibold text-sm group-hover:text-[#1DB954] transition-colors" />
-                <p className="text-[#b3b3b3] text-xs truncate mt-0.5">{artistName}</p>
-              </div>
-              {track.duration && (
-                <span className="hidden sm:block text-xs text-[#b3b3b3] font-mono tabular-nums pr-2">
-                  {Math.floor(track.duration / 60)}:{(track.duration % 60).toString().padStart(2, '0')}
-                </span>
-              )}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setTrackToAdd?.(track);
-                }}
-                className="p-2 text-white/40 hover:text-white transition-colors cursor-pointer"
-                title="Tambahkan ke Playlist"
-              >
-                <MoreVertical className="w-4 h-4" />
-              </button>
-            </div>
-          );
-        })}
+        {filteredTracks.map((track, index) => (
+          <Top50TrackItem
+            key={track.videoId + index}
+            track={track}
+            index={index}
+            filteredTracks={filteredTracks}
+          />
+        ))}
 
         {filteredTracks.length === 0 && (
           <div className="text-center py-16 text-white/50 space-y-2">

@@ -1,22 +1,133 @@
 'use client';
 
-import React, { memo } from 'react';
-import { Play, ArrowRight } from 'lucide-react';
+import React, { memo, useRef, useCallback } from 'react';
+import { Play } from 'lucide-react';
 import Image from 'next/image';
 import { getHighResImage } from '@/lib/utils';
 import { usePlayerStore } from '@/lib/store';
 import { useRouter } from 'next/navigation';
-
 import { prefetchNavigation } from '@/lib/clientDataCache';
+import { useTapGesture } from '@/hooks/useTapGesture';
 
 interface MixedScrollProps {
   title: string;
   items: any[];
 }
 
-export const MixedScroll = memo(function MixedScroll({ title, items }: MixedScrollProps) {
+const MixedScrollItem = memo(function MixedScrollItem({
+  item,
+  index,
+  items,
+}: {
+  item: any;
+  index: number;
+  items: any[];
+}) {
   const playTrack = usePlayerStore((state) => state.playTrack);
   const router = useRouter();
+
+  const type = item.type;
+  const isArtist = type === 'ARTIST';
+  const isPlaylist = type === 'PLAYLIST';
+  const isAlbum = type === 'ALBUM';
+  const isSong = type === 'SONG' || type === 'VIDEO';
+
+  const titleText = item.name || item.title || 'Unknown';
+  const subtitleText = isArtist
+    ? 'Artis'
+    : isPlaylist
+    ? 'Playlist'
+    : isAlbum
+    ? 'Album'
+    : Array.isArray(item.artist)
+    ? item.artist.map((a: any) => a.name).join(', ')
+    : item.artist?.name || 'Lagu';
+
+  const handlePrefetch = useCallback(() => {
+    if (isArtist && item.artistId) {
+      prefetchNavigation(router, `/artist/${item.artistId}`, 'artist', item.artistId);
+    } else if (isPlaylist && item.playlistId) {
+      prefetchNavigation(router, `/playlist/${item.playlistId}`, 'playlist', item.playlistId);
+    } else if (isAlbum && item.albumId) {
+      prefetchNavigation(router, `/album/${item.albumId}`, 'album', item.albumId);
+    }
+  }, [router, isArtist, isPlaylist, isAlbum, item.artistId, item.playlistId, item.albumId]);
+
+  const handleAction = useCallback(() => {
+    if (isArtist && item.artistId) {
+      router.push(`/artist/${item.artistId}`);
+    } else if (isPlaylist && item.playlistId) {
+      router.push(`/playlist/${item.playlistId}`);
+    } else if (isAlbum && item.albumId) {
+      router.push(`/album/${item.albumId}`);
+    } else if (isSong && (item.videoId || item.id)) {
+      const songItems = items.filter((it: any) => it.type === 'SONG' || it.type === 'VIDEO' || it.videoId || it.id);
+      const songIdx = songItems.findIndex((it: any) => (it.videoId || it.id) === (item.videoId || item.id));
+      playTrack(item, songItems.length > 0 ? songItems : [item], 'playlist', songIdx !== -1 ? songIdx : undefined);
+    }
+  }, [router, playTrack, isArtist, isPlaylist, isAlbum, isSong, item, items]);
+
+  const tapGesture = useTapGesture({
+    onTap: handleAction,
+    threshold: 8,
+  });
+
+  return (
+    <div
+      {...tapGesture}
+      className="flex-none w-36 md:w-44 p-3 bg-[#181818]/60 hover:bg-[#282828] rounded-md cursor-pointer group snap-start transition-colors duration-200 select-none shadow-sm flex flex-col gpu-accelerated content-auto"
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+      onMouseEnter={handlePrefetch}
+      onTouchStart={handlePrefetch}
+    >
+      <div
+        className={`relative w-full aspect-square overflow-hidden mb-3 shadow-md bg-black/40 ${
+          isArtist ? 'rounded-full' : 'rounded-[4px]'
+        }`}
+      >
+        <Image
+          src={getHighResImage(item.thumbnails?.[item.thumbnails.length - 1]?.url, 300)}
+          alt={titleText}
+          fill
+          sizes="(max-width: 768px) 144px, 176px"
+          priority={index < 3}
+          loading={index < 3 ? undefined : 'lazy'}
+          decoding="async"
+          className="object-cover"
+        />
+        <div className="absolute right-2 bottom-2 w-10 h-10 md:w-11 md:h-11 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 shadow-[0_8px_8px_rgba(0,0,0,0.3)] hover:scale-105 active:scale-95">
+          <Play className="w-5 h-5 fill-current ml-0.5" />
+        </div>
+      </div>
+      <h4 className="text-sm font-bold text-white truncate leading-tight group-hover:underline">
+        {titleText}
+      </h4>
+      <p className="text-xs text-[#b3b3b3] truncate mt-1">{subtitleText}</p>
+    </div>
+  );
+});
+
+export const MixedScroll = memo(function MixedScroll({ title, items }: MixedScrollProps) {
+  const isScrollingRef = useRef(false);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleContainerScroll = useCallback(() => {
+    isScrollingRef.current = true;
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = setTimeout(() => {
+      isScrollingRef.current = false;
+    }, 150);
+  }, []);
+
+  const handleCaptureClick = useCallback((e: React.MouseEvent) => {
+    if (isScrollingRef.current) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, []);
 
   if (!items || items.length === 0) return null;
 
@@ -27,83 +138,19 @@ export const MixedScroll = memo(function MixedScroll({ title, items }: MixedScro
           {title}
         </h2>
       </div>
-      <div className="flex overflow-x-auto no-scrollbar gap-4 px-4 pb-2 snap-x snap-mandatory scroll-smooth overscroll-x-contain gpu-accelerated">
-        {items.map((item, i) => {
-          const type = item.type;
-          const isArtist = type === 'ARTIST';
-          const isPlaylist = type === 'PLAYLIST';
-          const isAlbum = type === 'ALBUM';
-          const isSong = type === 'SONG' || type === 'VIDEO';
-
-          const titleText = item.name || item.title || 'Unknown';
-          const subtitleText = isArtist
-            ? 'Artis'
-            : isPlaylist
-            ? 'Playlist'
-            : isAlbum
-            ? 'Album'
-            : Array.isArray(item.artist)
-            ? item.artist.map((a: any) => a.name).join(', ')
-            : item.artist?.name || 'Lagu';
-
-          const handlePrefetch = () => {
-            if (isArtist && item.artistId) {
-              prefetchNavigation(router, `/artist/${item.artistId}`, 'artist', item.artistId);
-            } else if (isPlaylist && item.playlistId) {
-              prefetchNavigation(router, `/playlist/${item.playlistId}`, 'playlist', item.playlistId);
-            } else if (isAlbum && item.albumId) {
-              prefetchNavigation(router, `/album/${item.albumId}`, 'album', item.albumId);
-            }
-          };
-
-          const handleClick = () => {
-            if (isArtist && item.artistId) {
-              router.push(`/artist/${item.artistId}`);
-            } else if (isPlaylist && item.playlistId) {
-              router.push(`/playlist/${item.playlistId}`);
-            } else if (isAlbum && item.albumId) {
-              router.push(`/album/${item.albumId}`);
-            } else if (isSong && (item.videoId || item.id)) {
-              const songItems = items.filter((it: any) => it.type === 'SONG' || it.type === 'VIDEO' || it.videoId || it.id);
-              const songIdx = songItems.findIndex((it: any) => (it.videoId || it.id) === (item.videoId || item.id));
-              playTrack(item, songItems.length > 0 ? songItems : [item], 'playlist', songIdx !== -1 ? songIdx : undefined);
-            }
-          };
-
-          return (
-            <div
-              key={`${item.videoId || item.playlistId || item.albumId || item.artistId}-${i}`}
-              className="flex-none w-36 md:w-44 p-3 bg-[#181818]/60 hover:bg-[#282828] rounded-md cursor-pointer group snap-start transition-colors duration-200 select-none shadow-sm flex flex-col gpu-accelerated content-auto"
-              onClick={handleClick}
-              onMouseEnter={handlePrefetch}
-              onTouchStart={handlePrefetch}
-            >
-              <div
-                className={`relative w-full aspect-square overflow-hidden mb-3 shadow-md bg-black/40 ${
-                  isArtist ? 'rounded-full' : 'rounded-[4px]'
-                }`}
-              >
-                <Image
-                  src={getHighResImage(item.thumbnails?.[item.thumbnails.length - 1]?.url, 300)}
-                  alt={titleText}
-                  fill
-                  sizes="(max-width: 768px) 144px, 176px"
-                  priority={i < 3}
-                  loading={i < 3 ? undefined : 'lazy'}
-                  decoding="async"
-                  className="object-cover"
-                />
-                <div className="absolute right-2 bottom-2 w-10 h-10 md:w-11 md:h-11 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 shadow-[0_8px_8px_rgba(0,0,0,0.3)] hover:scale-105 active:scale-95">
-                  <Play className="w-5 h-5 fill-current ml-0.5" />
-                </div>
-              </div>
-              <h4 className="text-sm font-bold text-white truncate leading-tight group-hover:underline">
-                {titleText}
-              </h4>
-              <p className="text-xs text-[#b3b3b3] truncate mt-1">{subtitleText}</p>
-            </div>
-          );
-        })}
+      <div
+        onScroll={handleContainerScroll}
+        onClickCapture={handleCaptureClick}
+        className="flex overflow-x-auto no-scrollbar gap-4 px-4 pb-2 snap-x snap-mandatory scroll-smooth overscroll-x-contain gpu-accelerated"
+      >
+        {items.map((item, i) => (
+          <MixedScrollItem
+            key={`${item.videoId || item.playlistId || item.albumId || item.artistId}-${i}`}
+            item={item}
+            index={i}
+            items={items}
+          />
+        ))}
       </div>
     </section>
   );

@@ -262,12 +262,6 @@ export default function Search() {
           return (
             <button
               key={tab}
-              onPointerDown={(e) => {
-                if (e.button === 0) {
-                  setActiveTab(tab);
-                  saveSearchState({ query, results, activeTab: tab });
-                }
-              }}
               onClick={() => {
                 setActiveTab(tab);
                 saveSearchState({ query, results, activeTab: tab });

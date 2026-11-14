@@ -1,70 +1,236 @@
 import { GoogleGenAI } from '@google/genai';
 
-export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
+export type GeminiErrorCode =
+  | 'API_KEY_MISSING'
+  | 'INVALID_API_KEY'
+  | 'MODEL_NOT_FOUND'
+  | 'QUOTA_EXCEEDED'
+  | 'RATE_LIMITED'
+  | 'SERVICE_UNAVAILABLE'
+  | 'TRANSLATION_EMPTY'
+  | 'UNKNOWN_ERROR';
 
-// Default to Gemini Flash-Lite for ultra-fast, responsive AI interactions
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
-const FALLBACK_MODEL = 'gemini-2.0-flash-lite';
-const SECONDARY_FALLBACK = 'gemini-1.5-flash';
+export class GeminiError extends Error {
+  public code: GeminiErrorCode;
+  public status: number;
+  public retryable: boolean;
+
+  constructor(message: string, code: GeminiErrorCode, status: number, retryable = false) {
+    super(message);
+    this.name = 'GeminiError';
+    this.code = code;
+    this.status = status;
+    this.retryable = retryable;
+  }
+}
+
+/**
+ * Classifies Gemini SDK and API errors into distinct, actionable error types.
+ * Sanitizes any raw error message to never leak API keys to logs or users.
+ */
+export function classifyGeminiError(err: any): GeminiError {
+  if (err instanceof GeminiError) {
+    return err;
+  }
+
+  const rawMsg = err?.message || String(err || '');
+  const status = typeof err?.status === 'number' ? err.status : (typeof err?.statusCode === 'number' ? err.statusCode : 0);
+
+  // 1. Missing API Key
+  if (/API_KEY_MISSING/i.test(rawMsg) || (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY)) {
+    return new GeminiError(
+      'GEMINI_API_KEY belum dikonfigurasi pada environment server (.env.local / .env).',
+      'API_KEY_MISSING',
+      401,
+      false
+    );
+  }
+
+  // 2. Invalid API Key / Auth / Permission
+  if (
+    status === 400 ||
+    status === 401 ||
+    status === 403 ||
+    /API_KEY_INVALID|INVALID_ARGUMENT.*api_key|PERMISSION_DENIED|unauthorized/i.test(rawMsg)
+  ) {
+    return new GeminiError(
+      'GEMINI_API_KEY tidak valid atau izin akses ditolak oleh Google Gemini.',
+      'INVALID_API_KEY',
+      401,
+      false
+    );
+  }
+
+  // 3. Model Not Found / Deprecated
+  if (status === 404 || /NOT_FOUND|model.*not found|no longer available/i.test(rawMsg)) {
+    return new GeminiError(
+      'Model Gemini yang diminta tidak ditemukan atau sudah tidak tersedia.',
+      'MODEL_NOT_FOUND',
+      404,
+      false
+    );
+  }
+
+  // 4. Rate Limited vs Quota Exceeded
+  if (status === 429 || /RESOURCE_EXHAUSTED/i.test(rawMsg)) {
+    if (/quota|exceeded your current quota/i.test(rawMsg)) {
+      return new GeminiError(
+        'Batas kuota Gemini AI telah tercapai. Silakan periksa paket kuota Anda.',
+        'QUOTA_EXCEEDED',
+        429,
+        false
+      );
+    }
+    return new GeminiError(
+      'Permintaan Gemini AI terlalu cepat (Rate Limit). Silakan coba sesaat lagi.',
+      'RATE_LIMITED',
+      429,
+      true
+    );
+  }
+
+  // 5. Service Unavailable / Overloaded / Transient Upstream (503)
+  if (
+    status === 503 ||
+    status === 500 ||
+    /UNAVAILABLE|503|overloaded|service unavailable|timeout|ETIMEDOUT|ECONNRESET|fetch failed/i.test(rawMsg)
+  ) {
+    return new GeminiError(
+      'Layanan Gemini AI sedang mengalami gangguan sementara atau kelebihan beban (503).',
+      'SERVICE_UNAVAILABLE',
+      503,
+      true
+    );
+  }
+
+  // Default fallback
+  return new GeminiError(
+    'Gagal berkomunikasi dengan layanan Gemini AI.',
+    'UNKNOWN_ERROR',
+    status >= 400 && status < 600 ? status : 500,
+    false
+  );
+}
+
+/**
+ * Limited retry mechanism with exponential backoff for retryable errors (e.g. 503, transient network).
+ */
+async function callWithRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 2,
+  baseDelayMs = 1000
+): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const classified = classifyGeminiError(err);
+      attempt++;
+      if (classified.retryable && attempt <= maxRetries) {
+        const delay = baseDelayMs * Math.pow(2, attempt - 1);
+        console.warn(
+          `[GeminiService] Transient error (${classified.code}, status ${classified.status}) on attempt ${attempt}/${maxRetries}. Retrying in ${delay}ms...`
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw classified;
+    }
+  }
+}
 
 class GeminiService {
   private client: GoogleGenAI | null = null;
+  private activeKey: string = '';
 
   constructor() {
-    if (GEMINI_API_KEY && GEMINI_API_KEY !== 'MY_GEMINI_API_KEY') {
-      try {
-        this.client = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-      } catch (err) {
-        console.warn('[GeminiService] Failed to initialize GoogleGenAI client:', err);
+    this.refreshClient();
+  }
+
+  public getApiKey(): string {
+    return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
+  }
+
+  public hasApiKey(): boolean {
+    const key = this.getApiKey();
+    return Boolean(key && key !== 'MY_GEMINI_API_KEY' && key.trim().length > 0);
+  }
+
+  public getModel(): string {
+    return process.env.GEMINI_MODEL?.trim() || 'gemini-3.5-flash-lite';
+  }
+
+  private refreshClient(): GoogleGenAI | null {
+    const key = this.getApiKey();
+    if (this.hasApiKey()) {
+      if (key !== this.activeKey || !this.client) {
+        try {
+          this.client = new GoogleGenAI({ apiKey: key });
+          this.activeKey = key;
+        } catch (err) {
+          console.warn('[GeminiService] Failed to initialize GoogleGenAI client');
+          this.client = null;
+          this.activeKey = '';
+        }
       }
+    } else {
+      this.client = null;
+      this.activeKey = '';
     }
+    return this.client;
   }
 
   public isAvailable(): boolean {
-    return Boolean(GEMINI_API_KEY && GEMINI_API_KEY !== 'MY_GEMINI_API_KEY');
+    return this.hasApiKey();
   }
 
   /**
-   * Generates text content using Gemini with automatic model fallback.
+   * Generates text content using Gemini with limited exponential backoff retry and model fallback.
    */
   public async generateText(prompt: string, systemInstruction?: string): Promise<string> {
-    if (!this.isAvailable()) {
-      throw new Error('GEMINI_API_KEY tidak dikonfigurasi. Silakan tambahkan GEMINI_API_KEY pada berkas .env');
+    if (!this.hasApiKey()) {
+      throw new GeminiError(
+        'GEMINI_API_KEY belum dikonfigurasi pada environment server (.env.local / .env).',
+        'API_KEY_MISSING',
+        401,
+        false
+      );
     }
 
-    const ai = this.client || new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    const ai = this.refreshClient() || new GoogleGenAI({ apiKey: this.getApiKey() });
+    const primaryModel = this.getModel();
+    const fallbackModel = 'gemini-3-flash-preview';
 
     try {
-      const response = await ai.models.generateContent({
-        model: DEFAULT_MODEL,
-        contents: prompt,
-        config: systemInstruction ? { systemInstruction } : undefined,
-      });
-
-      return response.text?.trim() || '';
-    } catch (primaryErr: any) {
-      console.warn(`[GeminiService] Primary model (${DEFAULT_MODEL}) failed: ${primaryErr.message}. Trying fallback ${FALLBACK_MODEL}...`);
-      try {
-        const fallbackRes = await ai.models.generateContent({
-          model: FALLBACK_MODEL,
+      return await callWithRetry(async () => {
+        const response = await ai.models.generateContent({
+          model: primaryModel,
           contents: prompt,
           config: systemInstruction ? { systemInstruction } : undefined,
         });
-        return fallbackRes.text?.trim() || '';
-      } catch (fallbackErr: any) {
-        console.warn(`[GeminiService] Fallback model (${FALLBACK_MODEL}) failed: ${fallbackErr.message}. Trying secondary fallback ${SECONDARY_FALLBACK}...`);
+        return response.text?.trim() || '';
+      }, 2, 1000);
+    } catch (primaryErr: any) {
+      const err = primaryErr instanceof GeminiError ? primaryErr : classifyGeminiError(primaryErr);
+
+      // If primary model failed with MODEL_NOT_FOUND or persistent 503, try fallback model once
+      if (err.code === 'MODEL_NOT_FOUND' || err.code === 'SERVICE_UNAVAILABLE') {
+        console.warn(`[GeminiService] Primary model (${primaryModel}) failed with ${err.code}. Trying fallback model ${fallbackModel}...`);
         try {
-          const secondaryRes = await ai.models.generateContent({
-            model: SECONDARY_FALLBACK,
-            contents: prompt,
-            config: systemInstruction ? { systemInstruction } : undefined,
-          });
-          return secondaryRes.text?.trim() || '';
-        } catch (secondaryErr: any) {
-          console.error('[GeminiService] All Gemini models failed:', secondaryErr);
-          throw secondaryErr;
+          return await callWithRetry(async () => {
+            const fallbackRes = await ai.models.generateContent({
+              model: fallbackModel,
+              contents: prompt,
+              config: systemInstruction ? { systemInstruction } : undefined,
+            });
+            return fallbackRes.text?.trim() || '';
+          }, 1, 1500);
+        } catch (fallbackErr: any) {
+          throw classifyGeminiError(fallbackErr);
         }
       }
+      throw err;
     }
   }
 
@@ -150,12 +316,23 @@ Format jawaban WAJIB berupa JSON array murni:
         .trim();
       const parsed = JSON.parse(cleanJson);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((item, idx) => ({
-          time: typeof item.time === 'number' ? item.time : lyricsLines[idx]?.time || 0,
-          text: item.text || lyricsLines[idx]?.text || '',
-          translation: item.translation || '',
-          romaji: item.romaji || undefined,
-        }));
+        const transMap = new Map<number, { translation?: string; romaji?: string }>();
+        parsed.forEach((item, idx) => {
+          transMap.set(idx, {
+            translation: typeof item.translation === 'string' ? item.translation : '',
+            romaji: typeof item.romaji === 'string' && item.romaji.trim().length > 0 ? item.romaji : undefined,
+          });
+        });
+
+        return lyricsLines.map((line, idx) => {
+          const trans = transMap.get(idx);
+          return {
+            time: typeof line.time === 'number' ? line.time : 0,
+            text: line.text || '',
+            translation: trans?.translation || '',
+            romaji: trans?.romaji,
+          };
+        });
       }
     } catch (err) {
       console.warn('[GeminiService] Failed to parse translation JSON, fallback to line mapping:', err);
@@ -166,7 +343,8 @@ Format jawaban WAJIB berupa JSON array murni:
 
   /**
    * Synchronizes plain lyrics text with audio timeline using Gemini AI.
-   * Generates millisecond-accurate timestamps based on song structure, duration, and vocal phrasing.
+   * Analyzes song structure (Intro, Verse, Chorus, Bridge, Outro), vocal phrasing, and rhythm.
+   * Returns valid, verified timestamps or null if alignment cannot be reliably determined.
    */
   public async synchronizeLyrics(
     lyricsLines: Array<{ time?: number; text: string }>,
@@ -181,24 +359,24 @@ Format jawaban WAJIB berupa JSON array murni:
 
     const validDuration = duration > 10 ? duration : 180;
 
-    const systemInstruction = `Anda adalah ahli sinkronisasi audio dan lirik musik profesional (Karaoke Audio & Lyrics Synchronization Specialist).
-Tugas Anda: Menganalisis teks lirik lagu "${title}" oleh "${artist}" dengan total durasi lagu ${validDuration} detik, lalu menghasilkan timestamp vokal (dalam satuan detik desimal, contoh: 14.5) yang akurat untuk setiap baris lirik agar sinkron saat lagu diputar.
+    const systemInstruction = `Anda adalah ahli analisis audio dan lirik musik profesional.
+Tugas Anda: Menganalisis teks lirik lagu "${title}" oleh "${artist}" (total durasi lagu: ${validDuration} detik), mengidentifikasi bagian lagu (Intro, Verse, Chorus, Bridge, Outro), dan menghasilkan estimasi timestamp vokal yang realistis (dalam detik desimal, contoh: 14.5) untuk setiap baris.
 
-Aturan Sinkronisasi:
-1. Lagu umumnya memiliki intro musik instrumental sebelum vokal masuk (biasanya berkisar 8-20 detik pertama, kecuali lagu langsung vokal).
-2. Setiap baris vokal rata-rata berdurasi antara 2.5 hingga 5 detik tergantung panjang kata/suku kata.
-3. Berikan jeda instrumental realistis (gap) antara bait (verse), chorus/reff, dan bridge.
-4. Timestamp "time" HARUS SELALU berurutan naik secara monotonik (time line n+1 > time line n) dan TIDAK BOLEH melebihi total durasi (${validDuration}s).
-5. Jangan mengubah atau memangkas teks baris lirik; pertahankan teks asli.
+Aturan Penting:
+1. Awali dengan jeda instrumental Intro (umumnya 8-25 detik).
+2. Setiap baris vokal memiliki jeda alami (2.5 - 6 detik per baris).
+3. Berikan jeda instrumental realistis antar bagian (antara Verse dan Chorus).
+4. Timestamp "time" HARUS SELALU berurutan naik secara monotonik (time[n+1] > time[n]) dan TIDAK BOLEH melebihi total durasi (${validDuration}s).
+5. Teks lirik tidak boleh diubah atau dipangkas.
 
-Format output WAJIB berupa JSON Array murni tanpa markdown wrapper:
+Format output WAJIB berupa JSON Array murni tanpa markdown:
 [
-  { "time": 12.5, "text": "Baris lirik pertama..." },
-  { "time": 16.8, "text": "Baris lirik kedua..." }
+  { "time": 14.5, "text": "Baris lirik pertama..." },
+  { "time": 18.2, "text": "Baris lirik kedua..." }
 ]`;
 
     const sample = nonBlank.slice(0, 150).map((l) => l.text.trim());
-    const prompt = `Berikut daftar baris lirik lagu "${title}" - "${artist}" (Total Durasi: ${validDuration} detik):\n${JSON.stringify(sample, null, 2)}\n\nHasilkan timestamp detik (time) untuk setiap baris lirik di atas dalam format JSON Array.`;
+    const prompt = `Berikut daftar baris lirik lagu "${title}" - "${artist}" (Durasi: ${validDuration} detik):\n${JSON.stringify(sample, null, 2)}\n\nHasilkan timestamp vokal (time) untuk setiap baris di atas dalam format JSON Array.`;
 
     try {
       const raw = await this.generateText(prompt, systemInstruction);
@@ -207,47 +385,36 @@ Format output WAJIB berupa JSON Array murni tanpa markdown wrapper:
         .replace(/```/g, '')
         .trim();
       const parsed = JSON.parse(cleanJson);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed) && parsed.length >= 2) {
         let prevTime = 0;
-        return parsed.map((item, idx) => {
+        const validated: Array<{ time: number; text: string }> = [];
+
+        for (let idx = 0; idx < parsed.length; idx++) {
+          const item = parsed[idx];
           let t = typeof item.time === 'number' ? item.time : prevTime + 3;
-          if (t <= prevTime) t = Number((prevTime + 1.5).toFixed(1));
-          if (t > validDuration - 2) t = Math.max(0, validDuration - 2);
+          if (t <= prevTime) t = Number((prevTime + 1.8).toFixed(1));
+          if (t > validDuration - 2) {
+            t = Math.max(0, validDuration - 2);
+          }
           prevTime = t;
-          return {
+          validated.push({
             time: Number(t.toFixed(1)),
             text: item.text || nonBlank[idx]?.text || '',
-          };
-        });
+          });
+        }
+
+        // Verify timestamps are strictly ascending
+        if (validated.length >= 2 && validated[validated.length - 1].time > validated[0].time) {
+          return validated;
+        }
       }
     } catch (err) {
-      console.warn('[GeminiService] Failed to parse synchronized lyrics from Gemini, using smart curve:', err);
+      console.warn('[GeminiService] Failed to obtain synchronized lyrics from Gemini:', err);
     }
 
-    // High-fidelity fallback based on song timing & syllables
-    return this.fallbackSynchronize(nonBlank, validDuration);
-  }
-
-  private fallbackSynchronize(
-    lyricsLines: Array<{ time?: number; text: string }>,
-    duration: number
-  ): Array<{ time: number; text: string }> {
-    const validDuration = duration > 10 ? duration : 180;
-    const introDuration = Math.min(18, Math.max(6, validDuration * 0.08));
-    const activeDuration = Math.max(10, validDuration - introDuration - validDuration * 0.04);
-    const totalChars = lyricsLines.reduce((acc, l) => acc + Math.max(12, (l.text || '').trim().length), 0);
-
-    let accumulatedTime = introDuration;
-    return lyricsLines.map((l) => {
-      const textTrimmed = (l.text || '').trim();
-      const lineTime = Math.round(accumulatedTime * 10) / 10;
-      const weight = Math.max(12, textTrimmed.length) / (totalChars || 1);
-      accumulatedTime += weight * activeDuration;
-      return {
-        time: lineTime,
-        text: l.text,
-      };
-    });
+    // Never fake synchronization by linear interpolation if AI fails:
+    // Return empty array to signal that lyrics should be treated as unsynced plain text
+    return [];
   }
 }
 

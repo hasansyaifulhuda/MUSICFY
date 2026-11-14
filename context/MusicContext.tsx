@@ -25,6 +25,13 @@ import { useAudioQualityStore } from '@/lib/audioQualityStore';
 import { deduplicatedFetch } from '@/lib/clientDeduplication';
 import { useDevModalStore } from '@/lib/devModalStore';
 import { startBackgroundAudio, stopBackgroundAudio, terminateBackgroundAudio } from '@/lib/backgroundService';
+import {
+  NativeAudioPlayer,
+  isNativeAndroid,
+  subscribeNativeAudioEvents,
+  syncNativePlaybackState,
+  checkAndRequestNotificationPermission,
+} from '@/lib/nativeAudioBridge';
 
 declare global {
   interface Window {
@@ -142,11 +149,14 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, [isMuted]);
   const isSeekingLockRef = useRef<boolean>(false);
   const seekLockTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const targetSeekTimeRef = useRef<number | null>(null);
   const loadedTrackIdRef = useRef<string | null>(null);
   const lastProgressRef = useRef<number>(-1);
   const lastMediaSessionUpdateRef = useRef<number>(0);
   const activeBlobUrlRef = useRef<string | null>(null);
   const playNextRef = useRef<() => void>(() => {});
+  const lastHandledEndedTrackIdRef = useRef<string | null>(null);
+  const isHandlingTrackEndRef = useRef<boolean>(false);
   const wakeLockRef = useRef<any>(null);
   const pendingResumePositionRef = useRef<number | null>(null);
   const isSessionRestoredRef = useRef<boolean>(false);
@@ -174,6 +184,9 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const toggleRepeatStore = usePlayerStore((state) => state.toggleRepeat);
   const toggleRepeat = useCallback(() => {
     toggleRepeatStore();
+    if (isNativeAndroid()) {
+      return;
+    }
     // Immediate native audio element synchronization for instant repeat mode transition
     setTimeout(() => {
       const audio = audioRef.current || getPersistentAudioElement();
@@ -356,8 +369,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // Synchronize lockscreen/notification scrubber in Android APK
-      if (typeof window !== 'undefined' && window.AndroidMediaBridge) {
+      // Synchronize lockscreen/notification scrubber in Android APK (Legacy HTML5 Bridge fallback)
+      if (typeof window !== 'undefined' && window.AndroidMediaBridge && !isNativeAndroid()) {
         try {
           const isCurrentPlaying = usePlayerStore.getState().isPlaying;
           window.AndroidMediaBridge.updatePlaybackState(
@@ -540,10 +553,132 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, [setProgress, updateMediaSessionPosition, setIsBuffering]);
 
   // =========================================================================
+  // Native Android Media3 ExoPlayer Two-Way Event Bridge & State Sync
+  // Active ONLY on Android native APK; Web & PWA use standard HTML5 Audio
+  // =========================================================================
+  useEffect(() => {
+    if (!isNativeAndroid()) return;
+
+    // Silence any residual HTML5 audio element
+    const audio = getPersistentAudioElement();
+    if (audio) {
+      try {
+        audio.pause();
+        audio.src = '';
+      } catch {}
+    }
+
+    // Check and request POST_NOTIFICATIONS permission on Android 13+
+    checkAndRequestNotificationPermission().catch(() => {});
+
+    // Sync state on mount (recovering from WebView reload or Activity recreation)
+    syncNativePlaybackState().then((state) => {
+      if (state) {
+        if (state.duration > 0) setDuration(state.duration);
+        if (state.position > 0) setProgress(state.position);
+        setPlayingStore(state.isPlaying);
+        setIsBuffering(state.state === 'buffering');
+      }
+    });
+
+    let cleanup: (() => void) | null = null;
+
+    subscribeNativeAudioEvents({
+      onPlaybackStateChanged: (data) => {
+        setIsBuffering(data.state === 'buffering');
+        setPlayingStore(data.isPlaying);
+      },
+      onPlaybackProgress: (data) => {
+        if (isSeekingLockRef.current) return;
+        if (typeof data.position === 'number' && !isNaN(data.position)) {
+          const cur = data.position;
+          if (Math.abs(cur - lastProgressRef.current) >= 0.25 || lastProgressRef.current < 0) {
+            lastProgressRef.current = cur;
+            setProgress(cur);
+          }
+        }
+      },
+      onDurationChanged: (data) => {
+        if (typeof data.duration === 'number' && data.duration > 0 && !isNaN(data.duration)) {
+          setDuration(data.duration);
+        }
+      },
+      onTrackChanged: (data) => {
+        lastHandledEndedTrackIdRef.current = null;
+        isHandlingTrackEndRef.current = false;
+        const currentTrackState = usePlayerStore.getState().currentTrack;
+        const curVid = extractVideoId(currentTrackState);
+        if (data.mediaId && data.mediaId !== curVid) {
+          const q = usePlayerStore.getState().queue;
+          const matchedIndex = q.findIndex((t) => extractVideoId(t) === data.mediaId);
+          if (matchedIndex !== -1) {
+            playQueueIndexStore(matchedIndex);
+          }
+        }
+      },
+      onPlaybackError: (data) => {
+        console.error('[NativeAudioBridge] Error from native ExoPlayer:', data);
+        setIsBuffering(false);
+        setPlayingStore(false);
+        toast.error(`Kesalahan pemutaran: ${data.message || 'Gagal memutar lagu'}`);
+      },
+      onPlaybackEnded: (data) => {
+        const endedVid = data?.mediaId;
+        const currentTrackState = usePlayerStore.getState().currentTrack;
+        const curVid = extractVideoId(currentTrackState);
+        const currentRepeat = usePlayerStore.getState().repeatMode;
+
+        // If event carries mediaId and it does NOT match currently playing track,
+        // it is a stale event from a previous track that already transitioned! Drop it!
+        if (endedVid && curVid && endedVid !== curVid) {
+          return;
+        }
+
+        // Repeat One handling
+        if (currentRepeat === 'one') {
+          if (isHandlingTrackEndRef.current) return;
+          isHandlingTrackEndRef.current = true;
+          setTimeout(() => {
+            isHandlingTrackEndRef.current = false;
+          }, 350);
+
+          NativeAudioPlayer.seekTo({ position: 0, positionMs: 0 }).then(() => {
+            NativeAudioPlayer.play();
+          });
+          return;
+        }
+
+        // Idempotency check: If this exact track's end was already handled, drop duplicate event
+        const targetEndedVid = endedVid || curVid;
+        if (targetEndedVid && lastHandledEndedTrackIdRef.current === targetEndedVid) {
+          return;
+        }
+        if (targetEndedVid) {
+          lastHandledEndedTrackIdRef.current = targetEndedVid;
+        }
+
+        if (playNextRef.current) {
+          playNextRef.current();
+        }
+      },
+    }).then((unsub) => {
+      cleanup = unsub;
+    });
+
+    return () => {
+      if (cleanup) cleanup();
+    };
+  }, [setIsBuffering, setPlayingStore, setProgress, setDuration, playQueueIndexStore]);
+
+  // =========================================================================
   // Native HTML5 Audio Engine & Hardware Event Listeners
   // Native events (timeupdate, ended, playing) bypass browser background timer throttling
   // =========================================================================
   useEffect(() => {
+    if (isNativeAndroid()) {
+      // Bypassed on Android APK: NativeAudioPlayer handles all audio & events
+      return;
+    }
     const audio = audioRef.current || getPersistentAudioElement();
     if (!audio) return;
     audioRef.current = audio;
@@ -554,12 +689,15 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     audio.muted = isMutedRef.current;
 
     const handleTimeUpdate = () => {
-      if (!isSeekingLockRef.current) {
-        const cur = audio.currentTime;
-        if (Math.abs(cur - lastProgressRef.current) >= 0.25 || lastProgressRef.current < 0) {
-          lastProgressRef.current = cur;
-          setProgress(cur);
-        }
+      // Strictly ignore timeupdate events while seeking is active or audio element reports seeking
+      if (audio.seeking || isSeekingLockRef.current) {
+        return;
+      }
+      const cur = audio.currentTime;
+      if (Math.abs(cur - lastProgressRef.current) >= 0.25 || lastProgressRef.current < 0) {
+        lastProgressRef.current = cur;
+        setProgress(cur);
+      }
         const now = Date.now();
         if (now - lastMediaSessionUpdateRef.current >= 600) {
           lastMediaSessionUpdateRef.current = now;
@@ -651,12 +789,16 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
             }
           }
         }
-      }
     };
 
     const handleLoadedMetadata = () => {
       if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration) && audio.duration > 0) {
         setDuration(audio.duration);
+        if (targetSeekTimeRef.current !== null && targetSeekTimeRef.current > 0) {
+          try {
+            audio.currentTime = targetSeekTimeRef.current;
+          } catch {}
+        }
         updateMediaSessionPosition(audio.currentTime, audio.duration);
       }
     };
@@ -743,6 +885,13 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     const handleError = () => {
       setIsBuffering(false);
       const audio = getPersistentAudioElement();
+      if (!audio) return;
+
+      // Guard against harmless browser request aborts (MEDIA_ERR_ABORTED = 1)
+      if (audio.error && audio.error.code === 1) {
+        return;
+      }
+
       const state = usePlayerStore.getState();
       const currentTrack = state.currentTrack;
       const trackId = currentTrack ? extractVideoId(currentTrack) : '';
@@ -855,9 +1004,22 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
+    const handleSeeking = () => {
+      isSeekingLockRef.current = true;
+    };
+
     const handleSeeked = () => {
+      isSeekingLockRef.current = false;
+      targetSeekTimeRef.current = null;
+      if (seekLockTimerRef.current) {
+        clearTimeout(seekLockTimerRef.current);
+        seekLockTimerRef.current = null;
+      }
+      const cur = audio.currentTime;
+      lastProgressRef.current = cur;
+      setProgress(cur);
       if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration) && audio.duration > 0) {
-        updateMediaSessionPosition(audio.currentTime, audio.duration);
+        updateMediaSessionPosition(cur, audio.duration);
       }
     };
 
@@ -869,6 +1031,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     audio.removeEventListener('pause', handlePause);
     audio.removeEventListener('waiting', handleWaiting);
     audio.removeEventListener('playing', handlePlaying);
+    audio.removeEventListener('seeking', handleSeeking);
     audio.removeEventListener('seeked', handleSeeked);
     audio.removeEventListener('ended', handleEnded);
     audio.removeEventListener('error', handleError);
@@ -880,6 +1043,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     audio.addEventListener('pause', handlePause);
     audio.addEventListener('waiting', handleWaiting);
     audio.addEventListener('playing', handlePlaying);
+    audio.addEventListener('seeking', handleSeeking);
     audio.addEventListener('seeked', handleSeeked);
     audio.addEventListener('ended', handleEnded);
     audio.addEventListener('error', handleError);
@@ -892,6 +1056,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       audio.removeEventListener('pause', handlePause);
       audio.removeEventListener('waiting', handleWaiting);
       audio.removeEventListener('playing', handlePlaying);
+      audio.removeEventListener('seeking', handleSeeking);
       audio.removeEventListener('seeked', handleSeeked);
       audio.removeEventListener('ended', handleEnded);
       audio.removeEventListener('error', handleError);
@@ -902,6 +1067,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   // Playback Navigation (playNext, playPrev)
   // =========================================================================
   const playNext = useCallback(async () => {
+    lastHandledEndedTrackIdRef.current = null;
+    isHandlingTrackEndRef.current = false;
     hasTriggeredCrossfadeRef.current = false;
     hasUserGestureRef.current = true;
     playbackInitiatedAtRef.current = Date.now();
@@ -922,6 +1089,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, [playNext]);
 
   const playPrev = useCallback(() => {
+    lastHandledEndedTrackIdRef.current = null;
+    isHandlingTrackEndRef.current = false;
     hasTriggeredCrossfadeRef.current = false;
     hasUserGestureRef.current = true;
     playbackInitiatedAtRef.current = Date.now();
@@ -940,9 +1109,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   // =========================================================================
   const loadAndPlayTrack = useCallback(
     async (targetVid: string, autoPlay: boolean = true, startPosition?: number) => {
-      const audio = getPersistentAudioElement();
-      if (!audio || !targetVid) return;
-
+      lastHandledEndedTrackIdRef.current = null;
+      isHandlingTrackEndRef.current = false;
       const resumePosition =
         startPosition !== undefined
           ? startPosition
@@ -955,6 +1123,89 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
       }
+
+      if (!targetVid) return;
+
+      // =====================================================================
+      // PLATFORM BRANCH: Native Android ExoPlayer Engine
+      // =====================================================================
+      if (isNativeAndroid()) {
+        const audio = getPersistentAudioElement();
+        if (audio) {
+          try {
+            audio.pause();
+            audio.src = '';
+          } catch {}
+        }
+
+        loadedTrackIdRef.current = targetVid;
+        preloadedNextTrackIdRef.current = null;
+
+        if (autoPlay) {
+          setIsBuffering(true);
+        }
+
+        const currentTrackState = usePlayerStore.getState().currentTrack;
+        const trackName = currentTrackState?.name || 'MusicFY';
+        let artistName = 'Musik';
+        if (typeof (currentTrackState as any)?.artistName === 'string') {
+          artistName = (currentTrackState as any).artistName;
+        } else if (typeof currentTrackState?.artist === 'string') {
+          artistName = currentTrackState.artist;
+        } else if (Array.isArray(currentTrackState?.artist)) {
+          artistName = currentTrackState.artist
+            .map((a: any) => (typeof a === 'string' ? a : a?.name || ''))
+            .filter(Boolean)
+            .join(', ');
+        } else if (currentTrackState?.artist && typeof currentTrackState.artist === 'object') {
+          artistName = (currentTrackState.artist as any).name || 'Musik';
+        }
+
+        const rawArtwork = currentTrackState?.thumbnails?.[0]?.url || '';
+        const artworkUri = toAbsoluteArtworkUrl(rawArtwork);
+
+        const rawStreamUrl = useAudioQualityStore.getState().getStreamUrl(targetVid);
+        let targetUri = rawStreamUrl;
+        if (typeof window !== 'undefined' && !targetUri.startsWith('http://') && !targetUri.startsWith('https://')) {
+          try {
+            targetUri = new URL(targetUri, window.location.origin).href;
+          } catch {
+            targetUri = rawStreamUrl;
+          }
+        }
+
+        const posMs = resumePosition > 0 ? Math.round(resumePosition * 1000) : 0;
+        if (resumePosition > 0) setProgress(resumePosition);
+
+        try {
+          await NativeAudioPlayer.loadTrack({
+            mediaId: targetVid,
+            uri: targetUri,
+            title: trackName,
+            artist: artistName,
+            album: (currentTrackState as any)?.album || '',
+            artworkUri: artworkUri,
+            autoPlay: autoPlay,
+            positionMs: posMs,
+          });
+
+          const userVol = usePlayerStore.getState().volume ?? 100;
+          const targetVol = isMuted ? 0 : Math.max(0, Math.min(1, userVol / 100));
+          await NativeAudioPlayer.setVolume({ volume: targetVol });
+        } catch (err: any) {
+          console.error('[NativeAudioBridge] loadTrack error:', err);
+          setIsBuffering(false);
+          setPlayingStore(false);
+          toast.error(`Gagal memutar audio native: ${err?.message || 'Kesalahan koneksi'}`);
+        }
+        return;
+      }
+
+      // =====================================================================
+      // PLATFORM BRANCH: Web / PWA HTML5 Audio Engine (Original untouched)
+      // =====================================================================
+      const audio = getPersistentAudioElement();
+      if (!audio) return;
 
       // Guard: if audio element is already loaded with this videoId, don't interrupt or recreate
       const isAudioAlreadyLoaded = Boolean(
@@ -1113,6 +1364,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   // =========================================================================
   const playTrack = useCallback(
     async (track: any, queue?: any[], context?: 'playlist' | 'similar', forceIndex?: number) => {
+      lastHandledEndedTrackIdRef.current = null;
+      isHandlingTrackEndRef.current = false;
       hasTriggeredCrossfadeRef.current = false;
       hasUserGestureRef.current = true;
       playbackInitiatedAtRef.current = Date.now();
@@ -1171,13 +1424,17 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!currentVideoId) {
       loadedTrackIdRef.current = null;
-      const audio = getPersistentAudioElement();
-      if (audio && audio.src) {
-        try {
-          audio.pause();
-          audio.removeAttribute('src');
-          audio.load();
-        } catch {}
+      if (isNativeAndroid()) {
+        NativeAudioPlayer.stop().catch(() => {});
+      } else {
+        const audio = getPersistentAudioElement();
+        if (audio && audio.src) {
+          try {
+            audio.pause();
+            audio.removeAttribute('src');
+            audio.load();
+          } catch {}
+        }
       }
       return;
     }
@@ -1203,6 +1460,27 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const togglePlay = useCallback(async () => {
     hasUserGestureRef.current = true;
     initAudioContextKeepAlive();
+
+    if (isNativeAndroid()) {
+      const currentStore = usePlayerStore.getState();
+      const nextPlaying = !currentStore.isPlaying;
+      if (nextPlaying) {
+        playbackInitiatedAtRef.current = Date.now();
+        const vid = currentStore.currentTrack ? extractVideoId(currentStore.currentTrack) : '';
+        if (vid && loadedTrackIdRef.current !== vid) {
+          setIsBuffering(true);
+          await loadAndPlayTrack(vid, true);
+          return;
+        }
+        await NativeAudioPlayer.play();
+        setPlayingStore(true);
+      } else {
+        await NativeAudioPlayer.pause();
+        setPlayingStore(false);
+      }
+      return;
+    }
+
     const audio = getPersistentAudioElement();
     const currentStore = usePlayerStore.getState();
     const nextPlaying = !currentStore.isPlaying;
@@ -1261,6 +1539,25 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         playbackInitiatedAtRef.current = Date.now();
         initAudioContextKeepAlive();
       }
+
+      if (isNativeAndroid()) {
+        if (playing) {
+          const currentTrack = usePlayerStore.getState().currentTrack;
+          const vid = currentTrack ? extractVideoId(currentTrack) : '';
+          if (vid && loadedTrackIdRef.current !== vid) {
+            setIsBuffering(true);
+            await loadAndPlayTrack(vid, true);
+            return;
+          }
+          await NativeAudioPlayer.play();
+          setPlayingStore(true);
+        } else {
+          await NativeAudioPlayer.pause();
+          setPlayingStore(false);
+        }
+        return;
+      }
+
       setPlayingStore(playing);
       const audio = getPersistentAudioElement();
 
@@ -1306,17 +1603,46 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
   const seekTo = useCallback(
     (time: number) => {
+      if (isNativeAndroid()) {
+        const currentTrack = usePlayerStore.getState().currentTrack;
+        const storeDur = usePlayerStore.getState().duration;
+        const dur = (storeDur > 0 ? storeDur : currentTrack?.duration) || 0;
+        const clamped = Math.max(0, Math.min(dur > 0 ? dur : 9999, time));
+
+        isSeekingLockRef.current = true;
+        lastProgressRef.current = clamped;
+        targetSeekTimeRef.current = clamped;
+        setProgress(clamped);
+
+        NativeAudioPlayer.seekTo({ position: clamped, positionMs: Math.round(clamped * 1000) }).catch((err) => {
+          console.warn('[NativeAudioBridge] seekTo error:', err);
+        });
+
+        if (seekLockTimerRef.current) clearTimeout(seekLockTimerRef.current);
+        seekLockTimerRef.current = setTimeout(() => {
+          isSeekingLockRef.current = false;
+          targetSeekTimeRef.current = null;
+        }, 500);
+        return;
+      }
+
       const audio = getPersistentAudioElement();
-      const dur = usePlayerStore.getState().duration || 0;
+      const currentTrack = usePlayerStore.getState().currentTrack;
+      const storeDur = usePlayerStore.getState().duration;
+      const audioDuration = audio && typeof audio.duration === 'number' && isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      const dur = (storeDur > 0 ? storeDur : currentTrack?.duration) || audioDuration || 0;
       const clamped = Math.max(0, Math.min(dur > 0 ? dur : 9999, time));
 
       isSeekingLockRef.current = true;
       lastProgressRef.current = clamped;
+      targetSeekTimeRef.current = clamped;
       setProgress(clamped);
 
       if (audio) {
         try {
-          audio.currentTime = clamped;
+          if (audio.src && audio.src !== window.location.href) {
+            audio.currentTime = clamped;
+          }
           const targetVol = Math.max(0, Math.min(1, (usePlayerStore.getState().volume ?? 100) / 100));
           if (!isMutedRef.current && Math.abs(audio.volume - targetVol) > 0.05) {
             audio.volume = targetVol;
@@ -1324,15 +1650,19 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           if (usePlayerStore.getState().isPlaying && audio.paused) {
             audio.play().catch(() => {});
           }
-        } catch {}
+        } catch (seekErr) {
+          console.warn('[AudioEngine] Error applying audio.currentTime:', seekErr);
+        }
       }
 
       updateMediaSessionPosition(clamped, dur);
 
       if (seekLockTimerRef.current) clearTimeout(seekLockTimerRef.current);
+      // Safety unlock timeout if seeked event is delayed by network range fetching
       seekLockTimerRef.current = setTimeout(() => {
         isSeekingLockRef.current = false;
-      }, 400);
+        targetSeekTimeRef.current = null;
+      }, 2000);
     },
     [setProgress, updateMediaSessionPosition]
   );
@@ -1341,6 +1671,11 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     (val: number) => {
       const clamped = Math.max(0, Math.min(100, val));
       setVolumeStore(clamped);
+      if (isNativeAndroid()) {
+        const targetVol = isMutedRef.current ? 0 : Math.max(0, Math.min(1, clamped / 100));
+        NativeAudioPlayer.setVolume({ volume: targetVol }).catch(() => {});
+        return;
+      }
       const audio = getPersistentAudioElement();
       if (audio) {
         audio.volume = clamped / 100;
@@ -1352,6 +1687,12 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const toggleMute = useCallback(() => {
     const next = !isMuted;
     setIsMuted(next);
+    if (isNativeAndroid()) {
+      const curVol = usePlayerStore.getState().volume ?? 100;
+      const targetVol = next ? 0 : Math.max(0, Math.min(1, curVol / 100));
+      NativeAudioPlayer.setVolume({ volume: targetVol }).catch(() => {});
+      return;
+    }
     const audio = getPersistentAudioElement();
     if (audio) {
       audio.muted = next;
@@ -1360,6 +1701,11 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
   // Synchronize master volume, mute, and repeat loop state whenever settings change
   useEffect(() => {
+    if (isNativeAndroid()) {
+      const targetVol = isMuted ? 0 : Math.max(0, Math.min(1, volume / 100));
+      NativeAudioPlayer.setVolume({ volume: targetVol }).catch(() => {});
+      return;
+    }
     const audio = audioRef.current || getPersistentAudioElement();
     if (audio) {
       const targetVol = isMuted ? 0 : Math.max(0, Math.min(1, volume / 100));
@@ -1774,8 +2120,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       } catch {}
     }
 
-    // 2. Native Android MediaSession Bridge (for Capacitor APK Status Bar & Lockscreen Controls)
-    if (typeof window !== 'undefined' && window.AndroidMediaBridge) {
+    // 2. Native Android MediaSession Bridge (for Capacitor APK Status Bar & Lockscreen Controls - Legacy fallback)
+    if (typeof window !== 'undefined' && window.AndroidMediaBridge && !isNativeAndroid()) {
       try {
         const colorHex = dominantColor || '#1DB954';
         if (typeof (window.AndroidMediaBridge as any).updateMetadataWithColor === 'function') {
@@ -1814,7 +2160,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
       navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
     }
-    if (typeof window !== 'undefined' && window.AndroidMediaBridge) {
+    if (typeof window !== 'undefined' && window.AndroidMediaBridge && !isNativeAndroid()) {
       try {
         const curDur = Math.round((usePlayerStore.getState().duration || 0) * 1000);
         const curPos = Math.round((usePlayerStore.getState().progress || 0) * 1000);
@@ -1894,7 +2240,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
             navigator.mediaSession.playbackState = 'playing';
           }
-          if (typeof window !== 'undefined' && window.AndroidMediaBridge) {
+          if (typeof window !== 'undefined' && window.AndroidMediaBridge && !isNativeAndroid()) {
             try {
               const audio = getPersistentAudioElement();
               const posMs = Math.round((audio?.currentTime || usePlayerStore.getState().progress || 0) * 1000);
@@ -2007,25 +2353,46 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   // =========================================================================
   useHotkeys({
     onTogglePlay: togglePlay,
-    onSeekBackward: () => {
+    onSeekBackward: (seconds = 5) => {
       const cur = usePlayerStore.getState().progress;
-      seekTo(Math.max(0, cur - 5));
+      seekTo(Math.max(0, cur - seconds));
     },
-    onSeekForward: () => {
+    onSeekForward: (seconds = 5) => {
       const cur = usePlayerStore.getState().progress;
-      const dur = usePlayerStore.getState().duration || 0;
-      seekTo(Math.min(dur, cur + 5));
+      const storeDur = usePlayerStore.getState().duration;
+      const track = usePlayerStore.getState().currentTrack;
+      const audio = getPersistentAudioElement();
+      const audioDur = audio && typeof audio.duration === 'number' && isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      const dur = (storeDur > 0 ? storeDur : track?.duration) || audioDur || 0;
+      const maxLimit = dur > 0 ? dur : 999999;
+      seekTo(Math.min(maxLimit, cur + seconds));
     },
     onToggleMute: toggleMute,
     onNextTrack: playNext,
     onPrevTrack: playPrev,
     onVolumeUp: () => {
       const curVol = usePlayerStore.getState().volume ?? 100;
-      setVolume(Math.min(100, curVol + 5));
+      const nextVol = Math.min(100, curVol + 5);
+      setVolume(nextVol);
+      if (isMuted) {
+        toggleMute();
+      }
     },
     onVolumeDown: () => {
       const curVol = usePlayerStore.getState().volume ?? 100;
-      setVolume(Math.max(0, curVol - 5));
+      const nextVol = Math.max(0, curVol - 5);
+      setVolume(nextVol);
+    },
+    onOpenFullScreenLyrics: () => {
+      const track = usePlayerStore.getState().currentTrack;
+      if (track) {
+        usePlayerStore.getState().setFullScreenLyricsOpen(true);
+      }
+    },
+    onCloseFullScreenLyrics: () => {
+      if (usePlayerStore.getState().isFullScreenLyricsOpen) {
+        usePlayerStore.getState().setFullScreenLyricsOpen(false);
+      }
     },
     onToggleDevPanel: () => {
       useDevModalStore.getState().toggleModal();

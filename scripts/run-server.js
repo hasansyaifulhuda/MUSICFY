@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const net = require('net');
 const { spawn } = require('child_process');
+const { acquireLock, releaseLock } = require('./process-lock');
 
 const rootDir = path.resolve(__dirname, '..');
 
@@ -62,6 +63,7 @@ function loadEnvironment(mode) {
     path.join(rootDir, '.env.local'),
     mode === 'dev' ? path.join(rootDir, '.env.development') : path.join(rootDir, '.env.production'),
     path.join(rootDir, '.env'),
+    path.join(rootDir, '.env.example'),
   ];
 
   for (const file of envFiles) {
@@ -166,7 +168,26 @@ async function main() {
     } catch {}
   }
 
-  // 6. Display Clean Startup Info
+  // 6. Project Lock Guard (Prevents concurrent Next.js processes from corrupting .next)
+  const lockResult = acquireLock(mode, port, appUrl);
+  if (!lockResult.success) {
+    const existing = lockResult.existing;
+    console.error('\n\x1b[31m============================================================\x1b[0m');
+    console.error('\x1b[31m[MusicFY Server Error] Another Next.js Server is Already Running!\x1b[0m');
+    console.error('------------------------------------------------------------');
+    console.error(`  • Running PID : \x1b[33m${existing.pid}\x1b[0m`);
+    console.error(`  • Mode        : \x1b[33m${existing.mode}\x1b[0m`);
+    console.error(`  • Port        : \x1b[33m${existing.port}\x1b[0m`);
+    console.error(`  • App URL     : \x1b[33m${existing.appUrl || 'N/A'}\x1b[0m`);
+    console.error('\nRunning multiple Next.js servers concurrently on the same directory');
+    console.error('causes Webpack cache file collisions, missing manifests, and HTTP 500 errors.');
+    console.error('\n\x1b[1mAction Required:\x1b[0m');
+    console.error(`  Please terminate the existing server (PID: ${existing.pid}) before starting a new one.`);
+    console.error('\x1b[31m============================================================\x1b[0m\n');
+    process.exit(1);
+  }
+
+  // 7. Display Clean Startup Info
   const modeLabel = mode === 'dev' ? 'Development' : 'Production';
   console.log('\n\x1b[32m============================================================\x1b[0m');
   console.log(`\x1b[1m  MusicFY Next.js Server (${modeLabel})\x1b[0m`);
@@ -226,10 +247,12 @@ async function main() {
 
   child.on('error', (err) => {
     console.error('[MusicFY Server] Failed to spawn Next.js process:', err);
+    releaseLock();
     process.exit(1);
   });
 
   child.on('exit', (code, signal) => {
+    releaseLock();
     if (signal) {
       process.kill(process.pid, signal);
     } else {
@@ -239,9 +262,11 @@ async function main() {
 
   // Graceful shutdown forwarding
   process.on('SIGINT', () => {
+    releaseLock();
     child.kill('SIGINT');
   });
   process.on('SIGTERM', () => {
+    releaseLock();
     child.kill('SIGTERM');
   });
 }

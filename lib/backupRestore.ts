@@ -24,7 +24,6 @@ export interface MusicFYBackupData {
     equalizer?: any;
     audioQuality?: string;
     crossfadeDuration?: number;
-    floatingLyricsEnabled?: boolean;
     lyricsOffsets?: Record<string, number>;
   };
 }
@@ -60,15 +59,8 @@ export async function exportUserDataToJson(): Promise<boolean> {
     const history = usePlayerStore.getState().history || [];
 
     // 4. Fetch user preferences
-    let equalizer: any = null;
-    try {
-      const rawEq = debouncedLocalStorageGet('pmusic_equalizer_settings_v1');
-      if (rawEq) equalizer = JSON.parse(rawEq);
-    } catch {}
-
     const audioQuality = debouncedLocalStorageGet('pmusic_audio_quality_v1') || 'auto';
     const crossfadeDuration = Number(debouncedLocalStorageGet('pmusic_crossfade_duration_v1') || '2');
-    const floatingLyricsEnabled = debouncedLocalStorageGet('pmusic_floating_lyrics_pill_v1') !== 'false';
 
     let lyricsOffsets: Record<string, number> = {};
     try {
@@ -85,10 +77,8 @@ export async function exportUserDataToJson(): Promise<boolean> {
       likedTracks: Array.isArray(likedTracks) ? likedTracks : [],
       history: Array.isArray(history) ? history : [],
       preferences: {
-        equalizer,
         audioQuality,
         crossfadeDuration,
-        floatingLyricsEnabled,
         lyricsOffsets,
       },
     };
@@ -194,12 +184,6 @@ export async function importUserDataFromJson(file: File): Promise<ImportResult> 
 
     // 4. Restore Preferences
     if (data.preferences && typeof data.preferences === 'object') {
-      if (data.preferences.equalizer) {
-        debouncedLocalStorageSet(
-          'pmusic_equalizer_settings_v1',
-          JSON.stringify(data.preferences.equalizer)
-        );
-      }
       if (data.preferences.audioQuality) {
         debouncedLocalStorageSet('pmusic_audio_quality_v1', data.preferences.audioQuality);
       }
@@ -208,9 +192,6 @@ export async function importUserDataFromJson(file: File): Promise<ImportResult> 
           'pmusic_crossfade_duration_v1',
           String(data.preferences.crossfadeDuration)
         );
-      }
-      if (typeof data.preferences.floatingLyricsEnabled === 'boolean') {
-        debouncedLocalStorageSet('pmusic_floating_lyrics_pill_v1', String(data.preferences.floatingLyricsEnabled));
       }
       if (data.preferences.lyricsOffsets && typeof data.preferences.lyricsOffsets === 'object') {
         debouncedLocalStorageSet('pmusic_lyrics_offsets_v1', JSON.stringify(data.preferences.lyricsOffsets));

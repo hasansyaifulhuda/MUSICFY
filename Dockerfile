@@ -48,7 +48,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/scripts ./scripts
-COPY --from=builder /app/ecosystem.config.js ./ecosystem.config.js
+COPY --from=builder /app/ecosystem.config.cjs ./ecosystem.config.cjs
 
 # Create logs directory
 RUN mkdir -p /app/logs /app/storage

@@ -54,19 +54,12 @@ export function detectLyricBySongProgress(
     };
   }
 
-  // For plain text lyrics: map via character and stanza distribution
-  // Intro silence estimation (5% to 12% of duration)
-  const introRatio = 0.08;
-  const effectiveProgress = Math.max(0, (progressRatio - introRatio) / (1 - introRatio));
-  const targetIndex = Math.min(
-    lyrics.length - 1,
-    Math.max(0, Math.floor(effectiveProgress * lyrics.length))
-  );
-
+  // If lyrics do not have timestamps, do NOT fake linear duration progress
+  // Return -1 to allow natural, clean reading of plain text lyrics without jumping
   return {
-    index: targetIndex,
-    line: lyrics[targetIndex] || null,
-    estimatedProgressPct,
+    index: -1,
+    line: null,
+    estimatedProgressPct: 0,
   };
 }
 
@@ -122,47 +115,12 @@ export function autoCalibrateSilenceOffset(
 }
 
 /**
- * Converts Plain Text Lyrics into intelligent Synchronized Lyrics
- * by analyzing musical sections and song progress (minutes & seconds).
+ * Plain Text Lyrics Validation
+ * Returns lyrics cleanly without manufacturing fake linear timestamps.
  */
 export function generateAiSynchronizedLyrics(
-  plainLyrics: LyricLine[],
-  trackDuration?: number
+  plainLyrics: LyricLine[]
 ): LyricLine[] {
   if (!Array.isArray(plainLyrics) || plainLyrics.length === 0) return [];
-  const duration = trackDuration && trackDuration > 10 ? trackDuration : 180;
-
-  const nonHeaderLines = plainLyrics.filter(
-    (l) => l.text && !l.text.trim().startsWith('[') && !l.text.trim().endsWith(']')
-  );
-  if (nonHeaderLines.length === 0) return plainLyrics;
-
-  // Intelligent musical curve:
-  // - Intro: 6% to 10% of song
-  // - Outro fade: 4% of song
-  const introDuration = Math.min(18, Math.max(6, duration * 0.08));
-  const activeDuration = Math.max(10, duration - introDuration - (duration * 0.04));
-
-  const totalChars = nonHeaderLines.reduce(
-    (acc, l) => acc + Math.max(12, l.text.trim().length),
-    0
-  );
-
-  let accumulatedTime = introDuration;
-  return plainLyrics.map((l) => {
-    const textTrimmed = (l.text || '').trim();
-    // Headers remain markers
-    if (textTrimmed.startsWith('[') && textTrimmed.endsWith(']')) {
-      return { time: Math.max(0, accumulatedTime - 0.5), text: l.text };
-    }
-
-    const lineTime = Math.round(accumulatedTime * 10) / 10;
-    const weight = Math.max(12, textTrimmed.length) / totalChars;
-    accumulatedTime += weight * activeDuration;
-
-    return {
-      time: lineTime,
-      text: l.text,
-    };
-  });
+  return plainLyrics;
 }

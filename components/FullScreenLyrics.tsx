@@ -8,6 +8,8 @@ import { getHighResImage, cn } from '@/lib/utils';
 import Image from 'next/image';
 import {
   Minimize2,
+  Minimize,
+  Maximize2,
   ChevronDown,
   Play,
   Pause,
@@ -21,12 +23,17 @@ import {
   Languages,
   Music,
   MicOff,
+  SlidersHorizontal,
+  Check,
+  FileText,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { db } from '@/lib/db';
 import { getFastCachedLyrics } from '@/lib/lyricsCache';
 import { getPersistentAudioElement } from '@/lib/audioElement';
 import { useLyricsOffsetStore } from '@/lib/lyricsOffsetStore';
+import { toast } from '@/lib/toast';
+import { isNativeAndroid } from '@/lib/nativeAudioBridge';
 
 export interface FullScreenLyricsProps {
   lyrics: LyricLine[];
@@ -84,24 +91,31 @@ interface FullScreenLyricRowProps {
   translation?: string;
   romaji?: string;
   hasTrans: boolean;
+  translationMode: 'original' | 'translated' | 'both';
   isSynced: boolean;
-  onSeek: (time: number) => void;
+  onSeek: (time: number, idx?: number) => void;
   setRef: (el: HTMLDivElement | null) => void;
 }
 
 /**
- * Safely formats translated lyric line wrapped in parentheses.
- * Ensures outer parentheses from AI responses are not duplicated.
- * Returns empty string if text is empty, preventing empty "()" brackets.
+ * Safely formats translated lyric line.
+ * For 'both' mode, wraps in subtle parentheses.
+ * For 'translated' mode, renders cleanly without wrapping parentheses.
  */
-function formatTranslation(text?: string): string {
+function formatTranslation(text?: string, wrapInParens: boolean = true): string {
   if (!text) return '';
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  // Remove wrapping parentheses/brackets if already present
-  const cleaned = trimmed.replace(/^[\(\（\[\{]\s*|\s*[\)\）\]\}]$/g, '').trim();
+  let cleaned = text.trim();
   if (!cleaned) return '';
-  return `(${cleaned})`;
+  // Strip any wrapping parentheses or brackets
+  while (
+    (cleaned.startsWith('(') && cleaned.endsWith(')')) ||
+    (cleaned.startsWith('（') && cleaned.endsWith('）')) ||
+    (cleaned.startsWith('[') && cleaned.endsWith(']'))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  if (!cleaned) return '';
+  return wrapInParens ? `(${cleaned})` : cleaned;
 }
 
 /**
@@ -120,24 +134,25 @@ const FullScreenLyricRow = memo(
     translation,
     romaji,
     hasTrans,
+    translationMode,
     isSynced,
     onSeek,
     setRef,
   }: FullScreenLyricRowProps) {
     const handlePointerDown = useCallback(
       (e: React.PointerEvent) => {
-        if (e.button === 0) onSeek(time);
+        if (e.button === 0) onSeek(time, idx);
       },
-      [onSeek, time]
+      [onSeek, time, idx]
     );
 
     const handleClick = useCallback(
       (e: React.MouseEvent) => {
         e.stopPropagation();
         e.preventDefault();
-        onSeek(time);
+        onSeek(time, idx);
       },
-      [onSeek, time]
+      [onSeek, time, idx]
     );
 
     if (isSectionHeader) {
@@ -157,8 +172,12 @@ const FullScreenLyricRow = memo(
       );
     }
 
-    const formattedTrans = hasTrans ? formatTranslation(translation) : '';
-    const showTranslation = Boolean(formattedTrans);
+    const showBoth = translationMode === 'both' && hasTrans;
+    const showTranslatedOnly = translationMode === 'translated';
+    const primaryDisplayText = showTranslatedOnly
+      ? (translation && translation.trim() ? formatTranslation(translation, false) : text)
+      : text;
+    const secondaryDisplayText = showBoth ? formatTranslation(translation, true) : '';
 
     if (!isSynced) {
       return (
@@ -166,9 +185,9 @@ const FullScreenLyricRow = memo(
           ref={setRef}
           className="py-3 px-4 select-text leading-relaxed text-center"
         >
-          {/* Original Lyric: Pure White, Bold, Largest font */}
+          {/* Primary Lyric: Pure White, Bold, Largest font */}
           <p
-            className="text-center select-none font-bold text-xl sm:text-2xl md:text-3xl lg:text-4xl text-white tracking-tight leading-snug"
+            className="musicfy-lyric-original text-center select-none font-bold text-xl sm:text-2xl md:text-3xl lg:text-4xl text-white tracking-tight leading-snug"
             style={{
               color: '#FFFFFF',
               WebkitTextFillColor: '#FFFFFF',
@@ -176,10 +195,10 @@ const FullScreenLyricRow = memo(
               opacity: 0.95,
             }}
           >
-            {text}
+            {primaryDisplayText}
           </p>
-          {hasTrans && (
-            <div className="mt-2.5 sm:mt-3 flex flex-col items-center gap-1 animate-in fade-in duration-200">
+          {(showBoth || (showTranslatedOnly && romaji)) && (
+            <div className="mt-1.5 sm:mt-2 flex flex-col items-center gap-1 animate-in fade-in duration-200">
               {romaji && (
                 <p
                   className="text-xs sm:text-sm font-medium tracking-wide select-none"
@@ -192,17 +211,17 @@ const FullScreenLyricRow = memo(
                   {romaji}
                 </p>
               )}
-              {showTranslation && (
+              {secondaryDisplayText && (
                 <p
                   className="musicfy-lyric-translation text-sm sm:text-base md:text-xl lg:text-2xl font-medium tracking-normal text-center select-none leading-relaxed"
                   style={{
-                    color: '#A1A1AA',
-                    WebkitTextFillColor: '#A1A1AA',
+                    color: '#FFFFFF',
+                    WebkitTextFillColor: '#FFFFFF',
                     fontWeight: 500,
-                    opacity: 0.85,
+                    opacity: 0.75,
                   }}
                 >
-                  {formattedTrans}
+                  {secondaryDisplayText}
                 </p>
               )}
             </div>
@@ -213,10 +232,10 @@ const FullScreenLyricRow = memo(
 
     const isRowActive = position === 'active';
     const opacity =
-      isRowActive ? 1.0 : position === 'prev' ? 0.35 : position === 'next' ? 0.45 : 0.18;
+      isRowActive ? 1.0 : position === 'next' ? 0.55 : position === 'prev' ? 0.45 : 0.22;
     const transform =
       isRowActive
-        ? 'translate3d(0, 0, 0) scale(1.04)'
+        ? 'translate3d(0, 0, 0) scale(1.03)'
         : position === 'prev' || position === 'next'
         ? 'translate3d(0, 0, 0) scale(1.0)'
         : 'translate3d(0, 0, 0) scale(0.98)';
@@ -228,7 +247,7 @@ const FullScreenLyricRow = memo(
         onClick={handleClick}
         role="button"
         tabIndex={0}
-        aria-label={`Lirik baris ${idx + 1}: ${text}`}
+        aria-label={`Lirik baris ${idx + 1}: ${primaryDisplayText}`}
         style={{
           touchAction: 'manipulation',
           opacity,
@@ -247,7 +266,7 @@ const FullScreenLyricRow = memo(
           position === 'next-distant' && 'lyric-distant hover:opacity-85'
         )}
       >
-        {/* 1. Lirik Asli: Pure White #FFFFFF, Weight 800/700, Largest font */}
+        {/* 1. Lirik Utama: Pure White #FFFFFF, Weight 800/700, Largest font */}
         <p
           className={cn(
             'musicfy-lyric-original leading-tight tracking-tight text-center select-none',
@@ -260,12 +279,12 @@ const FullScreenLyricRow = memo(
             fontWeight: isRowActive ? 800 : 700,
           }}
         >
-          {text}
+          {primaryDisplayText}
         </p>
 
-        {/* 2. Lirik Terjemahan & Romaji: Spacing 8-12px (mt-2.5 sm:mt-3), Silver-Gray #A1A1AA, 65-75% font size, (Terjemahan) */}
-        {hasTrans && (
-          <div className="mt-2.5 sm:mt-3 flex flex-col items-center gap-1 animate-in fade-in duration-200">
+        {/* 2. Lirik Terjemahan & Romaji: Spacing mt-1.5 sm:mt-2, Pure White with lower opacity, 60-70% font size */}
+        {(showBoth || (showTranslatedOnly && romaji)) && (
+          <div className="mt-1.5 sm:mt-2 flex flex-col items-center gap-1 animate-in fade-in duration-200">
             {romaji && (
               <p
                 className="font-medium tracking-wide text-xs sm:text-sm md:text-base select-none"
@@ -278,21 +297,21 @@ const FullScreenLyricRow = memo(
                 {romaji}
               </p>
             )}
-            {showTranslation && (
+            {secondaryDisplayText && (
               <p
                 className={cn(
                   'musicfy-lyric-translation text-center select-none leading-relaxed tracking-normal',
                   'text-base sm:text-xl md:text-2xl lg:text-3xl',
-                  isRowActive ? 'font-semibold' : 'font-medium'
+                  isRowActive ? 'font-medium' : 'font-normal'
                 )}
                 style={{
-                  color: '#A1A1AA',
-                  WebkitTextFillColor: '#A1A1AA',
-                  fontWeight: isRowActive ? 600 : 500,
-                  opacity: isRowActive ? 0.9 : 0.65,
+                  color: '#FFFFFF',
+                  WebkitTextFillColor: '#FFFFFF',
+                  fontWeight: isRowActive ? 500 : 400,
+                  opacity: isRowActive ? 0.75 : 0.50,
                 }}
               >
-                {formattedTrans}
+                {secondaryDisplayText}
               </p>
             )}
           </div>
@@ -308,6 +327,7 @@ const FullScreenLyricRow = memo(
       prev.isActive === next.isActive &&
       prev.position === next.position &&
       prev.hasTrans === next.hasTrans &&
+      prev.translationMode === next.translationMode &&
       prev.translation === next.translation &&
       prev.romaji === next.romaji &&
       prev.isSynced === next.isSynced
@@ -339,14 +359,26 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const isBuffering = usePlayerStore((state) => state.isBuffering);
   const dominantColor = usePlayerStore((state) => state.dominantColor);
+  const storeProgress = usePlayerStore((state) => state.progress);
 
   const { togglePlay, playNext, playPrev, isLiked: checkLiked, toggleLike } = useMusic();
   const isLiked = currentTrack ? checkLiked(currentTrack.videoId) : false;
 
   const currentVideoId = currentTrack?.videoId;
 
+  // Synchronization tracking refs (Crucial for Native ExoPlayer on Android APK & Web HTML5 Audio)
+  const lastProgressRef = useRef<number>(0);
+  const lastProgressTimeRef = useRef<number>(performance.now());
+  const isNativeRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    isNativeRef.current = isNativeAndroid();
+  }, []);
+
   // Retrieve per-track lyric offset from persistent store
   const lyricsOffset = useLyricsOffsetStore((state) => state.getOffset(currentVideoId));
+  const adjustOffset = useLyricsOffsetStore((state) => state.adjustOffset);
+  const resetOffset = useLyricsOffsetStore((state) => state.resetOffset);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -361,25 +393,98 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
   // Dedicated RAF handle for smooth-scrolling animations (prevents animation stacking/competing)
   const scrollRafRef = useRef<number | null>(null);
 
+  // Translation mode: 'original' (default) | 'both' (original + translated) | 'translated' (translated primary)
+  const [translationMode, setTranslationMode] = useState<'original' | 'both' | 'translated'>('original');
+  const [showCalibration, setShowCalibration] = useState<boolean>(false);
+  const [isModeDropdownOpen, setIsModeDropdownOpen] = useState<boolean>(false);
+  const modeDropdownRef = useRef<HTMLDivElement>(null);
+  const isTranslationEnabled = translationMode !== 'original';
+
+  // Close mode dropdown on outside click
+  useEffect(() => {
+    if (!isModeDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (modeDropdownRef.current && !modeDropdownRef.current.contains(e.target as Node)) {
+        setIsModeDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isModeDropdownOpen]);
+
   // Reset active index & translation state when track changes
   useEffect(() => {
     activeIndexRef.current = -1;
     setActiveIndex(-1);
+    lastProgressRef.current = 0;
+    lastProgressTimeRef.current = performance.now();
     isFirstScrollRef.current = true;
     setShowSyncButton(false);
     isUserScrollingRef.current = false;
-    setIsTranslationEnabled(false);
+    setTranslationMode('original');
+    setShowCalibration(false);
+    setIsModeDropdownOpen(false);
     setTranslations(new Map());
     setTranslationsByIndex(new Map());
     setIsTranslating(false);
   }, [currentVideoId]);
+
+  // Browser Fullscreen API integration
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    document.addEventListener('webkitfullscreenchange', handleFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFsChange);
+      document.removeEventListener('webkitfullscreenchange', handleFsChange);
+    };
+  }, []);
+
+  const toggleNativeFullscreen = useCallback(() => {
+    try {
+      if (!document.fullscreenElement) {
+        if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        } else if ((document.documentElement as any).webkitRequestFullscreen) {
+          (document.documentElement as any).webkitRequestFullscreen();
+        }
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        } else if ((document as any).webkitExitFullscreen) {
+          (document as any).webkitExitFullscreen();
+        }
+      }
+    } catch {
+      // Ignored if user agent restricts fullscreen
+    }
+  }, []);
+
+  const handleClose = useCallback(() => {
+    if (document.fullscreenElement) {
+      try {
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        } else if ((document as any).webkitExitFullscreen) {
+          (document as any).webkitExitFullscreen();
+        }
+      } catch {
+        // Ignored
+      }
+    }
+    onClose();
+  }, [onClose]);
 
   // Keyboard shortcut listener (ESC to exit, Space to toggle playback)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        handleClose();
       } else if (e.code === 'Space' && e.target === document.body) {
         e.preventDefault();
         togglePlay();
@@ -387,7 +492,7 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, togglePlay]);
+  }, [handleClose, togglePlay]);
 
   // Fallback to offline/cached lyrics if prop is momentarily empty
   const [localLyrics, setLocalLyrics] = useState<LyricLine[] | null>(null);
@@ -445,7 +550,6 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
   const effectiveIsSynced = activeIsSynced;
 
   // AI Lyrics Translation & Romaji State (Default: OFF / false to save bandwidth & compute)
-  const [isTranslationEnabled, setIsTranslationEnabled] = useState<boolean>(false);
   const [translations, setTranslations] = useState<Map<number, { translation?: string; romaji?: string }>>(
     new Map()
   );
@@ -453,6 +557,8 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
     new Map()
   );
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
+  const failedTranslationsRef = useRef<Set<string>>(new Set());
+  const inFlightTranslationsRef = useRef<Set<string>>(new Set());
 
   const applyTranslations = useCallback((list: any[], videoId?: string) => {
     if (!Array.isArray(list) || list.length === 0) return;
@@ -490,9 +596,13 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
     return () => window.removeEventListener('musicfy:lyrics-translated', handleTranslatedEvent);
   }, [currentVideoId, applyTranslations]);
 
-  const toggleTranslation = useCallback(() => {
-    setIsTranslationEnabled((prev) => !prev);
-  }, []);
+  const handleSetTranslationMode = useCallback((mode: 'original' | 'both' | 'translated') => {
+    if (mode !== 'original' && currentVideoId) {
+      // Allow manual selection to retry translation even if it previously failed
+      failedTranslationsRef.current.delete(currentVideoId);
+    }
+    setTranslationMode(mode);
+  }, [currentVideoId]);
 
   // Zero-Bloat On-Demand Fetch: ONLY fetch translation & Romaji when explicitly enabled (isTranslationEnabled === true)
   useEffect(() => {
@@ -501,55 +611,111 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
     // Skip network request if translations are already stored in memory
     if (translations.size > 0 || translationsByIndex.size > 0) return;
 
+    // Prevent duplicate in-flight requests for the same track
+    if (inFlightTranslationsRef.current.has(currentVideoId)) return;
+
+    // Prevent repeating requests if translation previously failed for this track
+    if (failedTranslationsRef.current.has(currentVideoId)) {
+      setTranslationMode('original');
+      return;
+    }
+
     let isMounted = true;
     setIsTranslating(true);
+    const inFlightSet = inFlightTranslationsRef.current;
+    inFlightSet.add(currentVideoId);
+
+    const cleanup = () => {
+      inFlightSet.delete(currentVideoId);
+      if (isMounted) setIsTranslating(false);
+    };
 
     fetch(`/api/lyrics/translate?id=${encodeURIComponent(currentVideoId)}`)
       .then((res) => (res.ok ? res.json() : null))
-      .then((resData) => {
-        if (!isMounted) return;
-        const list = resData?.data || resData?.result;
-        if (Array.isArray(list) && list.length > 0) {
-          applyTranslations(list, currentVideoId);
-          setIsTranslating(false);
+      .then(async (resData) => {
+        if (!isMounted) {
+          cleanup();
+          return;
+        }
+
+        const cachedList = resData?.data || resData?.result;
+        if (Array.isArray(cachedList) && cachedList.length > 0) {
+          applyTranslations(cachedList, currentVideoId);
+          cleanup();
           return;
         }
 
         // Cache miss: request AI translation via Gemini API
-        fetch('/api/lyrics/translate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            videoId: currentVideoId,
-            title: currentTrack?.name,
-            artist: Array.isArray(currentTrack?.artist)
-              ? currentTrack.artist
-                  .map((a: any) => (typeof a === 'string' ? a : a?.name || ''))
-                  .filter(Boolean)
-                  .join(', ')
-              : currentTrack?.artist?.name || 'Unknown Artist',
-            lyrics: effectiveLyrics.slice(0, 60),
-          }),
-        })
-          .then((postRes) => (postRes.ok ? postRes.json() : null))
-          .then((postData) => {
-            if (!isMounted) return;
+        try {
+          const postRes = await fetch('/api/lyrics/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              videoId: currentVideoId,
+              title: currentTrack?.name,
+              artist: Array.isArray(currentTrack?.artist)
+                ? currentTrack.artist
+                    .map((a: any) => (typeof a === 'string' ? a : a?.name || ''))
+                    .filter(Boolean)
+                    .join(', ')
+                : currentTrack?.artist?.name || 'Unknown Artist',
+              lyrics: effectiveLyrics.slice(0, 100),
+            }),
+          });
+
+          const postData = await postRes.json().catch(() => null);
+
+          if (!isMounted) {
+            cleanup();
+            return;
+          }
+
+          if (postRes.ok && postData?.status) {
             const postList = postData?.data || postData?.result;
             if (Array.isArray(postList) && postList.length > 0) {
               applyTranslations(postList, currentVideoId);
+              cleanup();
+              return;
             }
-          })
-          .catch(() => {})
-          .finally(() => {
-            if (isMounted) setIsTranslating(false);
-          });
+          }
+
+          // Handle failure: mark as failed, disable translation toggle, and alert user
+          failedTranslationsRef.current.add(currentVideoId);
+          setTranslationMode('original');
+          cleanup();
+
+          const errMsg =
+            postData?.message ||
+            (postRes.status === 503
+              ? 'Layanan terjemahan Gemini sedang sibuk atau tidak dapat dijangkau (503). Silakan coba sesaat lagi.'
+              : postRes.status === 401
+              ? 'Layanan terjemahan AI memerlukan konfigurasi GEMINI_API_KEY pada server.'
+              : 'Gagal menerjemahkan lirik.');
+          toast.error(errMsg);
+        } catch {
+          if (!isMounted) {
+            cleanup();
+            return;
+          }
+          failedTranslationsRef.current.add(currentVideoId);
+          setTranslationMode('original');
+          cleanup();
+          toast.error('Gagal terhubung ke layanan terjemahan lirik.');
+        }
       })
       .catch(() => {
-        if (isMounted) setIsTranslating(false);
+        if (!isMounted) {
+          cleanup();
+          return;
+        }
+        failedTranslationsRef.current.add(currentVideoId);
+        setTranslationMode('original');
+        cleanup();
       });
 
     return () => {
       isMounted = false;
+      inFlightSet.delete(currentVideoId);
     };
   }, [
     isTranslationEnabled,
@@ -635,20 +801,54 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
     [cancelCurrentScroll, smoothScrollToTarget]
   );
 
-  // 1. Real-time 60fps RAF Synchronization directly with native HTML5 audio element
-  // Reads audio.currentTime directly and ONLY updates React state if activeIndex actually changed!
+  // Synchronize native progress updates (from NativeAudioPlayer on Android APK or store ticks)
+  useEffect(() => {
+    lastProgressRef.current = storeProgress;
+    lastProgressTimeRef.current = performance.now();
+    const isNative = isNativeRef.current;
+    const audio = isNative ? null : getPersistentAudioElement();
+    const hasActiveAudio = Boolean(audio && audio.src && !audio.paused);
+
+    if ((isNative || !hasActiveAudio) && effectiveIsSynced && effectiveLyrics && effectiveLyrics.length > 0) {
+      const effectiveTime = Math.max(0, storeProgress + (lyricsOffset || 0));
+      const newIndex = findActiveLyricIndex(effectiveLyrics, effectiveTime);
+      if (newIndex !== activeIndexRef.current) {
+        activeIndexRef.current = newIndex;
+        setActiveIndex(newIndex);
+      }
+    }
+  }, [storeProgress, effectiveIsSynced, effectiveLyrics, lyricsOffset]);
+
+  // Unified 60fps RAF Synchronization Engine (Cross-Platform: Web HTML5 Audio & Native Android ExoPlayer)
   useEffect(() => {
     if (!effectiveIsSynced || !effectiveLyrics || effectiveLyrics.length === 0) {
       return;
     }
 
-    const audio = getPersistentAudioElement();
-    if (!audio) return;
-
+    const isNative = isNativeAndroid();
+    const audio = isNative ? null : getPersistentAudioElement();
     let rafId: number | null = null;
 
     const checkAndUpdateLyric = () => {
-      const curTime = audio.currentTime;
+      let curTime = 0;
+      if (isNative) {
+        if (!isPlaying || isBuffering) {
+          curTime = lastProgressRef.current;
+        } else {
+          const elapsed = (performance.now() - lastProgressTimeRef.current) / 1000;
+          curTime = lastProgressRef.current + Math.max(0, elapsed);
+        }
+      } else {
+        if (audio && audio.src && (!audio.paused || audio.seeking) && !isBuffering) {
+          curTime = audio.currentTime;
+        } else if (audio && audio.src) {
+          curTime = audio.currentTime;
+        } else {
+          const elapsed = !isPlaying || isBuffering ? 0 : (performance.now() - lastProgressTimeRef.current) / 1000;
+          curTime = lastProgressRef.current + Math.max(0, elapsed);
+        }
+      }
+
       const effectiveTime = Math.max(0, curTime + (lyricsOffset || 0));
       const newIndex = findActiveLyricIndex(effectiveLyrics, effectiveTime);
 
@@ -657,44 +857,64 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
         setActiveIndex(newIndex);
       }
 
-      if (!audio.paused && !audio.ended) {
+      if (isPlaying && !isBuffering) {
         rafId = requestAnimationFrame(checkAndUpdateLyric);
       }
     };
 
-    const handlePlay = () => {
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(checkAndUpdateLyric);
-    };
-
-    const handlePause = () => {
-      if (rafId) cancelAnimationFrame(rafId);
-      checkAndUpdateLyric();
-    };
-
-    const handleImmediate = () => {
-      checkAndUpdateLyric();
-    };
-
-    // Initial check
+    // Run initial evaluation
     checkAndUpdateLyric();
-    if (!audio.paused) {
+
+    if (isPlaying && !isBuffering) {
       rafId = requestAnimationFrame(checkAndUpdateLyric);
     }
 
-    audio.addEventListener('play', handlePlay, { passive: true });
-    audio.addEventListener('pause', handlePause, { passive: true });
-    audio.addEventListener('timeupdate', handleImmediate, { passive: true });
-    audio.addEventListener('seeked', handleImmediate, { passive: true });
+    if (!isNative && audio) {
+      const handlePlay = () => {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(checkAndUpdateLyric);
+      };
+      const handlePause = () => {
+        if (rafId) cancelAnimationFrame(rafId);
+        checkAndUpdateLyric();
+      };
+      const handleImmediate = () => {
+        checkAndUpdateLyric();
+      };
+
+      audio.addEventListener('play', handlePlay, { passive: true });
+      audio.addEventListener('pause', handlePause, { passive: true });
+      audio.addEventListener('timeupdate', handleImmediate, { passive: true });
+      audio.addEventListener('seeked', handleImmediate, { passive: true });
+
+      return () => {
+        if (rafId) cancelAnimationFrame(rafId);
+        audio.removeEventListener('play', handlePlay);
+        audio.removeEventListener('pause', handlePause);
+        audio.removeEventListener('timeupdate', handleImmediate);
+        audio.removeEventListener('seeked', handleImmediate);
+      };
+    }
 
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
-      audio.removeEventListener('play', handlePlay);
-      audio.removeEventListener('pause', handlePause);
-      audio.removeEventListener('timeupdate', handleImmediate);
-      audio.removeEventListener('seeked', handleImmediate);
     };
-  }, [effectiveIsSynced, effectiveLyrics, lyricsOffset]);
+  }, [effectiveIsSynced, effectiveLyrics, lyricsOffset, isPlaying, isBuffering]);
+
+  // Immediate seek-to-lyric callback with instantaneous scroll snapping
+  const handleSeekToLyric = useCallback(
+    (time: number, index?: number) => {
+      if (typeof index === 'number' && index >= 0) {
+        activeIndexRef.current = index;
+        setActiveIndex(index);
+        lastProgressRef.current = time;
+        lastProgressTimeRef.current = performance.now();
+        scrollToActiveLine(index, true);
+      }
+      onSeek(time);
+    },
+    [onSeek, scrollToActiveLine]
+  );
 
   // 2. Trigger auto-scroll on activeIndex change
   useEffect(() => {
@@ -769,7 +989,7 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.98 }}
       transition={{ duration: 0.2 }}
-      className="fixed inset-0 z-[200] bg-[#070707] text-white flex flex-col overflow-hidden select-none"
+      className="fixed inset-0 z-[200] bg-[#070707] text-white flex flex-col overflow-hidden select-none w-full max-w-full"
     >
       {/* Ambient Dynamic Glow Orbs & Artwork Blur Layer */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden -z-10">
@@ -800,100 +1020,256 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
         <div className="absolute inset-0 bg-black/65 backdrop-blur-3xl" />
       </div>
 
-      {/* TOP HEADER */}
-      <header className="relative z-20 flex items-center justify-between p-4 md:px-8 border-b border-white/5 bg-black/20 backdrop-blur-md">
-        <div className="flex items-center gap-3 min-w-0 pr-4">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              onClose();
-            }}
-            className="w-10 h-10 -ml-1 rounded-full flex items-center justify-center hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer shrink-0"
-            aria-label="Kembali"
-            title="Kembali (Esc)"
-          >
-            <ChevronDown className="w-7 h-7" />
-          </button>
-          <div className="relative w-11 h-11 rounded-lg overflow-hidden shrink-0 shadow-lg border border-white/10">
-            <Image src={thumbnail} alt={currentTrack.name} fill sizes="44px" priority className="object-cover" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-sm md:text-base font-bold text-white truncate tracking-tight">
-              {currentTrack.name}
-            </h2>
-            <p className="text-xs text-white/60 truncate">{artistName}</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* Instant Romaji & Translation Mode Toggle (Active ONLY in Full-Screen Mode when lyrics exist) */}
-          {activeLyrics && activeLyrics.length > 0 && (
+      {/* TOP HEADER - Slender single-row layout saving maximum vertical space */}
+      <header className="relative z-20 w-full border-b border-white/5 bg-black/40 backdrop-blur-md pt-[max(env(safe-area-inset-top,0px),0.5rem)] pb-2 px-3 sm:px-6 md:px-8">
+        <div className="flex items-center justify-between gap-2 sm:gap-3 w-full h-10 sm:h-11">
+          {/* Left: Dismiss Button + Artwork + Track Info */}
+          <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
             <button
               type="button"
-              onClick={toggleTranslation}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-full text-xs font-semibold transition-all cursor-pointer border shadow-sm active:scale-95',
-                isTranslating
-                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
-                  : isTranslationEnabled
-                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/35 shadow-[0_0_12px_rgba(16,185,129,0.2)]'
-                  : 'bg-white/10 hover:bg-white/15 text-white/70 hover:text-white border-white/15'
-              )}
-              title={
-                isTranslating
-                  ? 'Sedang memproses terjemahan via Gemini AI...'
-                  : isTranslationEnabled
-                  ? 'Mode Terjemahan & Romaji Aktif (Klik untuk matikan)'
-                  : 'Mode Terjemahan & Romaji Nonaktif (Klik untuk aktifkan)'
-              }
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleClose();
+              }}
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center hover:bg-white/10 text-white/80 hover:text-white transition-colors cursor-pointer shrink-0"
+              aria-label="Kembali"
+              title="Kembali (Esc)"
             >
-              {isTranslating ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400 shrink-0" />
-              ) : (
-                <Languages
-                  className={cn(
-                    'w-3.5 h-3.5 shrink-0 transition-colors',
-                    isTranslationEnabled ? 'text-emerald-400' : 'text-white/60'
-                  )}
-                />
-              )}
-              <span className="hidden sm:inline font-medium">
-                {isTranslating
-                  ? 'Menerjemahkan...'
-                  : isTranslationEnabled
-                  ? 'Romaji & Terjemahan'
-                  : 'Terjemahan & Romaji'}
-              </span>
-              <span
-                className={cn(
-                  'w-1.5 h-1.5 rounded-full shrink-0 transition-colors',
-                  isTranslating
-                    ? 'bg-amber-400 animate-ping'
-                    : isTranslationEnabled
-                    ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]'
-                    : 'bg-white/30'
-                )}
-              />
+              <ChevronDown className="w-5 h-5 sm:w-6 sm:h-6" />
             </button>
-          )}
+            <div className="relative w-8 h-8 sm:w-9 sm:h-9 rounded-lg overflow-hidden shrink-0 shadow-md border border-white/10">
+              <Image src={thumbnail} alt={currentTrack.name} fill sizes="36px" priority className="object-cover" />
+            </div>
+            <div className="min-w-0 flex-1 pr-1">
+              <h2 className="text-xs sm:text-sm font-bold text-white truncate tracking-tight">
+                {currentTrack.name}
+              </h2>
+              <p className="text-[10px] sm:text-xs text-white/60 truncate">{artistName}</p>
+            </div>
+          </div>
 
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              onClose();
-            }}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-white/10 hover:bg-white/20 rounded-full text-xs font-bold text-white transition-all cursor-pointer shadow-lg active:scale-95 border border-white/10"
-            title="Tutup mode layar penuh (Esc)"
-          >
-            <Minimize2 className="w-4 h-4" />
-            <span className="hidden sm:inline">Keluar</span>
-          </button>
+          {/* Right: Mode Dropdown + Calibration + Fullscreen + Close */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Dynamic Lyrics Mode Selector Dropdown */}
+            {activeLyrics && activeLyrics.length > 0 && (
+              <div className="relative" ref={modeDropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setIsModeDropdownOpen((prev) => !prev)}
+                  className={cn(
+                    'flex items-center gap-1.5 h-8 sm:h-9 px-2.5 sm:px-3 rounded-full text-xs font-semibold transition-all cursor-pointer border shadow-sm active:scale-95 touch-manipulation select-none',
+                    translationMode !== 'original'
+                      ? 'bg-white text-black border-white shadow-[0_0_12px_rgba(255,255,255,0.2)]'
+                      : 'bg-white/10 hover:bg-white/15 text-white/85 hover:text-white border-white/10'
+                  )}
+                  aria-haspopup="listbox"
+                  aria-expanded={isModeDropdownOpen}
+                  title="Pilih Mode Lirik (Original, Keduanya, Terjemahan)"
+                >
+                  {isTranslating && (
+                    <Loader2
+                      className={cn(
+                        'w-3 h-3 animate-spin',
+                        translationMode !== 'original' ? 'text-black' : 'text-white'
+                      )}
+                    />
+                  )}
+                  <span className="truncate max-w-[80px] sm:max-w-none">
+                    {translationMode === 'both'
+                      ? 'Keduanya'
+                      : translationMode === 'translated'
+                      ? 'Terjemahan'
+                      : 'Original'}
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      'w-3 h-3 text-current/70 transition-transform duration-200 shrink-0',
+                      isModeDropdownOpen && 'rotate-180'
+                    )}
+                  />
+                </button>
+
+                {isModeDropdownOpen && (
+                  <div
+                    role="listbox"
+                    className="absolute right-0 top-full mt-1.5 w-44 rounded-2xl bg-neutral-900/95 backdrop-blur-2xl border border-white/15 p-1.5 shadow-2xl z-50 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-150"
+                  >
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={translationMode === 'original'}
+                      onClick={() => {
+                        handleSetTranslationMode('original');
+                        setIsModeDropdownOpen(false);
+                      }}
+                      className={cn(
+                        'flex items-center justify-between w-full px-3 py-2 rounded-xl text-xs font-medium transition-colors cursor-pointer select-none text-left',
+                        translationMode === 'original'
+                          ? 'bg-white/15 text-white font-semibold'
+                          : 'text-white/70 hover:bg-white/10 hover:text-white'
+                      )}
+                    >
+                      <span>Original</span>
+                      {translationMode === 'original' && <Check className="w-3.5 h-3.5 text-white" />}
+                    </button>
+
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={translationMode === 'both'}
+                      onClick={() => {
+                        handleSetTranslationMode('both');
+                        setIsModeDropdownOpen(false);
+                      }}
+                      className={cn(
+                        'flex items-center justify-between w-full px-3 py-2 rounded-xl text-xs font-medium transition-colors cursor-pointer select-none text-left',
+                        translationMode === 'both'
+                          ? 'bg-white/15 text-white font-semibold'
+                          : 'text-white/70 hover:bg-white/10 hover:text-white'
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span>Keduanya</span>
+                        {isTranslating && translationMode === 'both' && (
+                          <Loader2 className="w-3 h-3 animate-spin text-white/70" />
+                        )}
+                      </div>
+                      {translationMode === 'both' && <Check className="w-3.5 h-3.5 text-white" />}
+                    </button>
+
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={translationMode === 'translated'}
+                      onClick={() => {
+                        handleSetTranslationMode('translated');
+                        setIsModeDropdownOpen(false);
+                      }}
+                      className={cn(
+                        'flex items-center justify-between w-full px-3 py-2 rounded-xl text-xs font-medium transition-colors cursor-pointer select-none text-left',
+                        translationMode === 'translated'
+                          ? 'bg-white/15 text-white font-semibold'
+                          : 'text-white/70 hover:bg-white/10 hover:text-white'
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span>Terjemahan</span>
+                        {isTranslating && translationMode === 'translated' && (
+                          <Loader2 className="w-3 h-3 animate-spin text-white/70" />
+                        )}
+                      </div>
+                      {translationMode === 'translated' && <Check className="w-3.5 h-3.5 text-white" />}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Calibration Button */}
+            {effectiveIsSynced && (
+              <button
+                type="button"
+                onClick={() => setShowCalibration((prev) => !prev)}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 h-8 sm:h-9 px-2 sm:px-2.5 rounded-full text-xs font-semibold transition-all cursor-pointer border shadow-sm active:scale-95',
+                  showCalibration || lyricsOffset !== 0
+                    ? 'bg-purple-500/20 text-purple-300 border-purple-500/35 shadow-[0_0_12px_rgba(168,85,247,0.2)]'
+                    : 'bg-white/10 hover:bg-white/15 text-white/70 hover:text-white border-white/10'
+                )}
+                title="Pengaturan Timing Lirik (Kalibrasi Offset)"
+                aria-label="Pengaturan Kalibrasi Timing"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+                {lyricsOffset !== 0 && (
+                  <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-purple-500/40 text-purple-200">
+                    {lyricsOffset > 0 ? `+${lyricsOffset.toFixed(1)}s` : `${lyricsOffset.toFixed(1)}s`}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {/* Fullscreen Toggle */}
+            <button
+              type="button"
+              onClick={toggleNativeFullscreen}
+              className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 bg-white/10 hover:bg-white/20 rounded-full text-white/80 hover:text-white transition-all cursor-pointer border border-white/10 active:scale-95"
+              title={isFullscreen ? 'Keluar Layar Penuh' : 'Layar Penuh (Fullscreen)'}
+              aria-label="Toggle Fullscreen Layar"
+            >
+              {isFullscreen ? <Minimize className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Maximize2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
+            </button>
+
+            {/* Exit Button */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleClose();
+              }}
+              className="flex items-center justify-center gap-1 h-8 sm:h-9 px-2.5 sm:px-3 bg-white/10 hover:bg-white/20 rounded-full text-xs font-bold text-white transition-all cursor-pointer shadow-lg active:scale-95 border border-white/10"
+              title="Tutup mode layar penuh (Esc)"
+              aria-label="Keluar dari layar penuh"
+            >
+              <Minimize2 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              <span className="hidden sm:inline">Keluar</span>
+            </button>
+          </div>
         </div>
       </header>
+
+      {/* Expandable Calibration Bar */}
+      {showCalibration && effectiveIsSynced && currentVideoId && (
+        <div className="relative z-20 px-3 py-2 bg-black/40 backdrop-blur-md border-b border-white/10 flex items-center justify-center gap-1.5 sm:gap-2 flex-wrap text-xs animate-in fade-in slide-in-from-top-1 duration-200">
+          <span className="text-white/60 font-medium mr-1 text-[11px] sm:text-xs">Kalibrasi:</span>
+          <button
+            type="button"
+            onClick={() => adjustOffset(currentVideoId, -0.5)}
+            className="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 active:scale-95 text-white/90 border border-white/10 font-mono transition-all cursor-pointer text-xs"
+            title="Majukan lirik 0.5 detik"
+          >
+            -0.5s
+          </button>
+          <button
+            type="button"
+            onClick={() => adjustOffset(currentVideoId, -0.1)}
+            className="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 active:scale-95 text-white/90 border border-white/10 font-mono transition-all cursor-pointer text-xs"
+            title="Majukan lirik 0.1 detik"
+          >
+            -0.1s
+          </button>
+          <div className="px-2.5 sm:px-3 py-1 rounded-lg bg-purple-500/20 border border-purple-500/40 font-mono font-bold text-purple-300 min-w-[54px] sm:min-w-[60px] text-center text-xs">
+            {lyricsOffset > 0 ? `+${lyricsOffset.toFixed(1)}s` : `${lyricsOffset.toFixed(1)}s`}
+          </div>
+          <button
+            type="button"
+            onClick={() => adjustOffset(currentVideoId, 0.1)}
+            className="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 active:scale-95 text-white/90 border border-white/10 font-mono transition-all cursor-pointer text-xs"
+            title="Mundurkan lirik 0.1 detik"
+          >
+            +0.1s
+          </button>
+          <button
+            type="button"
+            onClick={() => adjustOffset(currentVideoId, 0.5)}
+            className="px-2 sm:px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 active:scale-95 text-white/90 border border-white/10 font-mono transition-all cursor-pointer text-xs"
+            title="Mundurkan lirik 0.5 detik"
+          >
+            +0.5s
+          </button>
+          {lyricsOffset !== 0 && (
+            <button
+              type="button"
+              onClick={() => resetOffset(currentVideoId)}
+              className="ml-1 sm:ml-2 px-2 sm:px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 active:scale-95 text-red-300 border border-red-500/30 font-medium transition-all cursor-pointer text-xs"
+              title="Reset ke sinkronisasi awal (0.0s)"
+            >
+              Reset (0.0s)
+            </button>
+          )}
+        </div>
+      )}
 
       {/* MAIN LYRICS SCROLLER */}
       <main className="flex-1 relative min-h-0 w-full overflow-hidden flex flex-col justify-center">
@@ -989,9 +1365,19 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
             onTouchStart={handleUserInteraction}
             onTouchMove={handleUserInteraction}
             onWheel={handleUserInteraction}
-            className="flex-1 overflow-y-auto no-scrollbar py-[38vh] px-6 sm:px-12 md:px-20 max-w-4xl mx-auto w-full text-center space-y-6 md:space-y-8 lyrics-mask gpu-accelerated relative"
+            className="flex-1 overflow-y-auto no-scrollbar py-[22vh] sm:py-[25vh] px-4 sm:px-10 md:px-20 max-w-4xl mx-auto w-full text-center space-y-3.5 sm:space-y-5 md:space-y-6 lyrics-mask gpu-accelerated relative"
             style={{ WebkitOverflowScrolling: 'touch' }}
           >
+            {/* Non-Synced Plain Text Indicator */}
+            {!effectiveIsSynced && (
+              <div className="py-4 flex items-center justify-center select-none">
+                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/10 border border-white/15 text-xs text-white/80 font-medium shadow-sm">
+                  <FileText className="w-3.5 h-3.5 text-white/60" />
+                  <span>Lirik Tanpa Sinkronisasi (Teks Biasa)</span>
+                </span>
+              </div>
+            )}
+
             {/* Intro Instrumental Indicator (Synced Mode Only) */}
             {effectiveIsSynced && activeIndex === -1 && (
               <div className="py-6 flex flex-col items-center justify-center gap-2 text-white/40 animate-pulse text-center">
@@ -1029,8 +1415,9 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
                   translation={transEntry?.translation}
                   romaji={transEntry?.romaji}
                   hasTrans={hasTrans}
+                  translationMode={translationMode}
                   isSynced={effectiveIsSynced}
-                  onSeek={onSeek}
+                  onSeek={handleSeekToLyric}
                   setRef={(el) => {
                     lineRefs.current[idx] = el;
                   }}
@@ -1060,8 +1447,8 @@ export const FullScreenLyrics = memo(function FullScreenLyrics({
       </main>
 
       {/* FLOATING BOTTOM CONTROLLER ISLAND */}
-      <footer className="relative z-20 pb-6 pt-2 px-4 flex justify-center">
-        <div className="flex items-center gap-4 bg-black/60 backdrop-blur-2xl border border-white/10 rounded-full py-2.5 px-6 shadow-2xl">
+      <footer className="relative z-20 pb-[max(env(safe-area-inset-bottom,0px),0.75rem)] pt-1 px-4 flex justify-center">
+        <div className="flex items-center gap-3.5 sm:gap-4 bg-black/60 backdrop-blur-2xl border border-white/10 rounded-full py-2 px-5 sm:py-2.5 sm:px-6 shadow-2xl">
           <button
             type="button"
             onClick={(e) => {

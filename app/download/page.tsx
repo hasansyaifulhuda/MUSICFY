@@ -1,17 +1,151 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { ArrowLeft, DownloadCloud, Play, Shuffle, Trash2, CheckCircle2, Music } from 'lucide-react';
+import { ArrowLeft, DownloadCloud, Play, Shuffle, Trash2, CheckCircle2, Music, Heart } from 'lucide-react';
 import { db, OfflineTrack } from '@/lib/db';
 import { Track, usePlayerStore } from '@/lib/store';
 import { useMusic } from '@/context/MusicContext';
-import { getHighResImage } from '@/lib/utils';
+import { getHighResImage, cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { MarqueeText } from '@/components/MarqueeText';
 import { Equalizer } from '@/components/Equalizer';
 import { VirtualTrackList } from '@/components/VirtualTrackList';
+import { useTapGesture } from '@/hooks/useTapGesture';
+
+function formatDuration(seconds?: number): string {
+  if (!seconds) return '--:--';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+const DownloadedTrackItem = memo(function DownloadedTrackItem({
+  track,
+  index,
+  trackList,
+  onRemove,
+}: {
+  track: Track;
+  index: number;
+  trackList: Track[];
+  onRemove: (id: string, name: string, e: React.MouseEvent) => void;
+}) {
+  const { playTrack, isLiked, toggleLike } = useMusic();
+  const currentVideoId = usePlayerStore((state) => state.currentTrack?.videoId);
+  const isPlaying = usePlayerStore((state) => state.isPlaying);
+  const isCurrent = currentVideoId === track.videoId;
+
+  const liked = Boolean(track?.videoId && isLiked(track.videoId));
+
+  const thumb =
+    (track as any).offlineThumbnail ||
+    getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120);
+
+  const artistName = useMemo(
+    () =>
+      Array.isArray(track.artist)
+        ? track.artist.map((a: any) => a.name).join(', ')
+        : track.artist?.name || 'Unknown Artist',
+    [track.artist]
+  );
+
+  const handlePlay = useCallback(() => {
+    playTrack(track, trackList, 'playlist', index);
+  }, [playTrack, track, trackList, index]);
+
+  const tapGesture = useTapGesture({
+    onTap: handlePlay,
+    threshold: 8,
+  });
+
+  const handleLikePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+  }, []);
+
+  const handleLikeClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (track) {
+        toggleLike(track);
+      }
+    },
+    [track, toggleLike]
+  );
+
+  return (
+    <div
+      {...tapGesture}
+      className={cn(
+        "flex items-center py-2.5 px-3 md:py-2.5 md:px-3.5 rounded-xl transition-colors duration-150 cursor-pointer group select-none border-b border-white/[0.04] last:border-b-0",
+        isCurrent ? "bg-white/[0.08]" : "hover:bg-white/[0.06] active:bg-white/[0.10]"
+      )}
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+    >
+      <div className="w-7 text-center text-xs md:text-sm text-white/40 group-hover:text-white/80 font-mono shrink-0 mr-1 tabular-nums">
+        {isCurrent && isPlaying ? (
+          <Equalizer size="sm" />
+        ) : (
+          index + 1
+        )}
+      </div>
+
+      <OfflineTrackThumbnail src={thumb} alt={track.name} priority={index < 4} />
+
+      <div className="ml-3 sm:ml-3.5 flex-1 min-w-0 pr-2">
+        <MarqueeText
+          text={track.name}
+          className={`font-semibold text-sm leading-snug tracking-tight ${
+            isCurrent ? 'text-[#1DB954]' : 'text-white'
+          }`}
+        />
+        <p className="text-xs text-white/60 truncate group-hover:text-white/80 transition-colors mt-0.5">{artistName}</p>
+      </div>
+
+      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+        <span className="text-[11px] sm:text-xs text-white/40 font-mono tabular-nums shrink-0 px-1 sm:px-2">
+          {formatDuration(track.duration)}
+        </span>
+
+        <button
+          type="button"
+          onPointerDown={handleLikePointerDown}
+          onClick={handleLikeClick}
+          className="p-1.5 sm:p-2 text-white/40 hover:text-white transition-all cursor-pointer rounded-lg hover:bg-white/10 active:scale-90 shrink-0"
+          title={liked ? 'Hapus dari Lagu Disukai' : 'Sukai Lagu'}
+          aria-label={liked ? 'Hapus dari Lagu Disukai' : 'Sukai Lagu'}
+          style={{ touchAction: 'manipulation' }}
+        >
+          <Heart
+            className={cn(
+              'w-4 h-4 transition-transform duration-150',
+              liked ? 'fill-[#1DB954] text-[#1DB954] scale-105' : 'hover:scale-110'
+            )}
+          />
+        </button>
+
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            if (e.button === 0) e.stopPropagation();
+          }}
+          onClick={(e) => onRemove(track.videoId, track.name, e)}
+          className="p-1.5 sm:p-2 text-white/40 hover:text-red-400 transition-colors rounded-lg hover:bg-white/10 cursor-pointer shrink-0"
+          title="Hapus dari unduhan"
+          aria-label="Hapus dari unduhan"
+          style={{ touchAction: 'manipulation' }}
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+});
 
 function OfflineTrackThumbnail({ src, alt, priority }: { src: string; alt: string; priority?: boolean }) {
   const [imgError, setImgError] = useState(false);
@@ -244,59 +378,15 @@ export default function DownloadPage() {
             queue={trackList}
             itemHeight={76}
             overscan={6}
-            renderItem={(track, index) => {
-              const isCurrent = currentVideoId === track.videoId;
-              const thumb =
-                (track as any).offlineThumbnail ||
-                getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120);
-              const artistName = Array.isArray(track.artist)
-                ? track.artist.map((a: any) => a.name).join(', ')
-                : track.artist?.name || 'Unknown Artist';
-
-              return (
-                <div
-                  key={track.videoId ? `${track.videoId}-${index}` : index}
-                  onClick={() => {
-                    playTrack(track, trackList, 'playlist', index);
-                  }}
-                  className={`flex items-center gap-3.5 p-2.5 md:p-3 rounded-xl transition-all cursor-pointer group select-none ${
-                    isCurrent ? 'bg-white/10' : 'hover:bg-white/[0.06]'
-                  }`}
-                >
-                  <div className="w-6 text-center text-xs text-[#b3b3b3] group-hover:text-white font-mono shrink-0">
-                    {isCurrent && isPlaying ? (
-                      <Equalizer size="sm" />
-                    ) : (
-                      index + 1
-                    )}
-                  </div>
-
-                  <OfflineTrackThumbnail src={thumb} alt={track.name} priority={index < 4} />
-
-                  <div className="flex-1 min-w-0 pr-2">
-                    <MarqueeText
-                      text={track.name}
-                      className={`font-semibold text-sm md:text-base leading-tight ${
-                        isCurrent ? 'text-[#1DB954]' : 'text-white'
-                      }`}
-                    />
-                    <p className="text-xs text-[#b3b3b3] truncate mt-0.5">{artistName}</p>
-                  </div>
-
-                  <div className="hidden sm:block text-xs text-[#b3b3b3] font-mono tabular-nums pr-2">
-                    {formatDuration(track.duration)}
-                  </div>
-
-                  <button
-                    onClick={(e) => handleRemoveTrack(track.videoId, track.name, e)}
-                    className="p-2 text-white/40 hover:text-red-400 transition-colors rounded-full hover:bg-white/5 cursor-pointer"
-                    title="Hapus dari unduhan"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              );
-            }}
+            renderItem={(track, index) => (
+              <DownloadedTrackItem
+                key={track.videoId ? `${track.videoId}-${index}` : index}
+                track={track}
+                index={index}
+                trackList={trackList}
+                onRemove={handleRemoveTrack}
+              />
+            )}
           />
         )}
       </div>

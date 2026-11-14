@@ -4,4 +4,5 @@
     <string name="title_activity_main">MusicFY</string>
     <string name="package_name">com.musicfy.app</string>
     <string name="custom_url_scheme">com.musicfy.app</string>
+    <string name="playback_notification_channel_name">Pemutar Musik MusicFY</string>
 </resources>

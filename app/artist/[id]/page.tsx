@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, memo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { ArrowLeft, Share2, Play, Radio, Check, UserPlus } from 'lucide-react';
@@ -12,6 +12,56 @@ import { MarqueeText } from '@/components/MarqueeText';
 import { ArtistSkeleton } from '@/components/ArtistSkeleton';
 import { toast } from '@/lib/toast';
 import { getCachedArtist, setCachedArtist, prefetchArtist } from '@/lib/clientDataCache';
+import { useTapGesture } from '@/hooks/useTapGesture';
+
+const ArtistAlbumCard = memo(function ArtistAlbumCard({
+  album,
+  index,
+}: {
+  album: any;
+  index: number;
+}) {
+  const router = useRouter();
+  const albumId = album?.albumId;
+  const handleNavigate = useCallback(() => {
+    if (albumId) {
+      router.push(`/album/${albumId}`);
+    }
+  }, [router, albumId]);
+
+  const tapGesture = useTapGesture({
+    onTap: handleNavigate,
+    threshold: 8,
+  });
+
+  return (
+    <div
+      {...tapGesture}
+      className="w-36 md:w-44 p-3 bg-[#181818]/60 hover:bg-[#282828] rounded-md shrink-0 snap-start group cursor-pointer transition-colors duration-200 select-none flex flex-col"
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+    >
+      <div className="relative aspect-square rounded-lg overflow-hidden mb-3 shadow-md bg-neutral-900 border border-white/5">
+        <Image
+          src={getHighResImage(album.thumbnails?.[album.thumbnails.length - 1]?.url, 400) || '/icon.png'}
+          alt={album.name}
+          fill
+          sizes="176px"
+          loading="lazy"
+          decoding="async"
+          className="object-cover"
+        />
+        <div className="absolute right-2 bottom-2 w-10 h-10 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 shadow-xl">
+          <Play className="w-5 h-5 fill-current ml-0.5" />
+        </div>
+      </div>
+      <MarqueeText text={album.name} className="text-white text-sm font-bold truncate leading-tight group-hover:underline" />
+      <p className="text-[#b3b3b3] text-xs mt-1">{album.year || 'Album'}</p>
+    </div>
+  );
+});
 
 export default function ArtistPage() {
   const params = useParams();
@@ -137,15 +187,17 @@ export default function ArtistPage() {
   return (
     <main className="min-h-screen pb-32">
       {/* Hero Header */}
-      <div className="relative h-[45vh] min-h-[320px] w-full">
-        <Image
-          src={headerImage || 'https://picsum.photos/1200/600'}
-          alt={artist.name}
-          fill
-          sizes="100vw"
-          className="object-cover opacity-85"
-          priority
-        />
+      <div className="relative h-[45vh] min-h-[320px] w-full bg-gradient-to-b from-neutral-800 to-[#121212]">
+        {headerImage ? (
+          <Image
+            src={headerImage}
+            alt={artist.name}
+            fill
+            sizes="100vw"
+            className="object-cover opacity-85"
+            priority
+          />
+        ) : null}
         <div className="absolute inset-0 bg-gradient-to-t from-[#121212] via-[#121212]/50 to-black/30" />
 
         {/* Top Controls */}
@@ -228,28 +280,11 @@ export default function ArtistPage() {
             <h2 className="text-xl md:text-2xl font-bold text-white mb-3 tracking-tight">Album</h2>
             <div className="flex overflow-x-auto no-scrollbar gap-4 snap-x snap-mandatory pb-3 scroll-smooth">
               {artist.topAlbums.map((album: any, index: number) => (
-                <div
+                <ArtistAlbumCard
                   key={`album-${album.albumId}-${index}`}
-                  className="w-36 md:w-44 p-3 bg-[#181818]/60 hover:bg-[#282828] rounded-md shrink-0 snap-start group cursor-pointer transition-colors duration-200 select-none flex flex-col"
-                  onClick={() => router.push(`/album/${album.albumId}`)}
-                >
-                  <div className="relative aspect-square rounded-[4px] overflow-hidden mb-3 shadow-md bg-black/40">
-                    <Image
-                      src={getHighResImage(album.thumbnails?.[album.thumbnails.length - 1]?.url, 400) || 'https://picsum.photos/300/300'}
-                      alt={album.name}
-                      fill
-                      sizes="176px"
-                      loading="lazy"
-                      decoding="async"
-                      className="object-cover"
-                    />
-                    <div className="absolute right-2 bottom-2 w-10 h-10 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 shadow-xl">
-                      <Play className="w-5 h-5 fill-current ml-0.5" />
-                    </div>
-                  </div>
-                  <MarqueeText text={album.name} className="text-white text-sm font-bold truncate leading-tight group-hover:underline" />
-                  <p className="text-[#b3b3b3] text-xs mt-1">{album.year || 'Album'}</p>
-                </div>
+                  album={album}
+                  index={index}
+                />
               ))}
             </div>
           </section>
@@ -261,28 +296,11 @@ export default function ArtistPage() {
             <h2 className="text-xl md:text-2xl font-bold text-white mb-3 tracking-tight">Single & EP</h2>
             <div className="flex overflow-x-auto no-scrollbar gap-4 snap-x snap-mandatory pb-3 scroll-smooth">
               {artist.topSingles.map((single: any, index: number) => (
-                <div
+                <ArtistAlbumCard
                   key={`single-${single.albumId}-${index}`}
-                  className="w-36 md:w-44 p-3 bg-[#181818]/60 hover:bg-[#282828] rounded-md shrink-0 snap-start group cursor-pointer transition-colors duration-200 select-none flex flex-col"
-                  onClick={() => router.push(`/album/${single.albumId}`)}
-                >
-                  <div className="relative aspect-square rounded-[4px] overflow-hidden mb-3 shadow-md bg-black/40">
-                    <Image
-                      src={getHighResImage(single.thumbnails?.[single.thumbnails.length - 1]?.url, 400) || 'https://picsum.photos/300/300'}
-                      alt={single.name}
-                      fill
-                      sizes="176px"
-                      loading="lazy"
-                      decoding="async"
-                      className="object-cover"
-                    />
-                    <div className="absolute right-2 bottom-2 w-10 h-10 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 shadow-xl">
-                      <Play className="w-5 h-5 fill-current ml-0.5" />
-                    </div>
-                  </div>
-                  <MarqueeText text={single.name} className="text-white text-sm font-bold truncate leading-tight group-hover:underline" />
-                  <p className="text-[#b3b3b3] text-xs mt-1">{single.year || 'Single'}</p>
-                </div>
+                  album={single}
+                  index={index}
+                />
               ))}
             </div>
           </section>

@@ -1,12 +1,13 @@
 'use client';
 
-import React, { memo } from 'react';
+import React, { memo, useRef, useCallback, useMemo } from 'react';
 import { Track, usePlayerStore } from '@/lib/store';
 import Image from 'next/image';
 import { getHighResImage } from '@/lib/utils';
 import { Play, ArrowRight } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { prefetchNavigation } from '@/lib/clientDataCache';
+import { useTapGesture } from '@/hooks/useTapGesture';
 
 interface HorizontalScrollProps {
   title: string;
@@ -14,13 +15,96 @@ interface HorizontalScrollProps {
   isFirstShelf?: boolean;
 }
 
+const HorizontalTrackItem = memo(function HorizontalTrackItem({
+  track,
+  tracks,
+  index,
+  isFirstShelf,
+}: {
+  track: Track;
+  tracks: Track[];
+  index: number;
+  isFirstShelf: boolean;
+}) {
+  const playTrack = usePlayerStore((state) => state.playTrack);
+
+  const thumbnail = useMemo(
+    () => getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 300),
+    [track.thumbnails]
+  );
+
+  const artistName = useMemo(
+    () =>
+      Array.isArray(track.artist)
+        ? track.artist.map((a) => a.name).join(', ')
+        : track.artist?.name || 'Unknown Artist',
+    [track.artist]
+  );
+
+  const handlePlay = useCallback(() => {
+    playTrack(track, tracks, 'playlist', index);
+  }, [playTrack, track, tracks, index]);
+
+  const tapGesture = useTapGesture({
+    onTap: handlePlay,
+    threshold: 8,
+  });
+
+  return (
+    <div
+      {...tapGesture}
+      className="flex-none w-36 md:w-44 p-3 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.05] hover:border-white/[0.12] rounded-2xl cursor-pointer group snap-start transition-all duration-200 select-none shadow-sm flex flex-col gpu-accelerated content-auto"
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+    >
+      <div className="relative w-full aspect-square rounded-xl overflow-hidden mb-3 shadow-md bg-black/40 border border-white/5">
+        <Image
+          src={thumbnail}
+          alt={track.name}
+          fill
+          sizes="(max-width: 768px) 144px, 176px"
+          priority={isFirstShelf && index < 4}
+          loading={isFirstShelf && index < 4 ? undefined : 'lazy'}
+          decoding="async"
+          className="object-cover transition-transform duration-300 group-hover:scale-105"
+        />
+        <div className="absolute right-2 bottom-2 w-10 h-10 md:w-11 md:h-11 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 shadow-[0_8px_20px_rgba(29,185,84,0.4)] hover:scale-105 active:scale-95">
+          <Play className="w-5 h-5 fill-current ml-0.5" />
+        </div>
+      </div>
+      <h4 className="text-sm font-bold text-white truncate leading-tight group-hover:text-[#1DB954] transition-colors">
+        {track.name}
+      </h4>
+      <p className="text-xs text-[#b3b3b3] truncate mt-1">{artistName}</p>
+    </div>
+  );
+});
+
 export const HorizontalScroll = memo(function HorizontalScroll({
   title,
   tracks,
   isFirstShelf = false,
 }: HorizontalScrollProps) {
-  const playTrack = usePlayerStore((state) => state.playTrack);
   const router = useRouter();
+  const isScrollingRef = useRef(false);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleContainerScroll = useCallback(() => {
+    isScrollingRef.current = true;
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = setTimeout(() => {
+      isScrollingRef.current = false;
+    }, 150);
+  }, []);
+
+  const handleCaptureClick = useCallback((e: React.MouseEvent) => {
+    if (isScrollingRef.current) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, []);
 
   if (!tracks || tracks.length === 0) return null;
 
@@ -66,12 +150,9 @@ export const HorizontalScroll = memo(function HorizontalScroll({
     headerContent = (
       <div
         className="flex items-center justify-between mb-3 px-4 cursor-pointer group select-none"
-        onPointerDown={(e) => {
-          if (e.button === 0) handleHeaderClick();
-        }}
+        onClick={handleHeaderClick}
         onMouseEnter={handlePrefetchHeader}
         onTouchStart={handlePrefetchHeader}
-        style={{ touchAction: 'manipulation' }}
       >
         <div className="flex items-center gap-3">
           {headerImage && (
@@ -97,7 +178,6 @@ export const HorizontalScroll = memo(function HorizontalScroll({
         </div>
         <button
           className="p-2 text-[#b3b3b3] group-hover:text-white transition-colors cursor-pointer"
-          style={{ touchAction: 'manipulation' }}
         >
           <ArrowRight className="w-5 h-5" />
         </button>
@@ -108,51 +188,20 @@ export const HorizontalScroll = memo(function HorizontalScroll({
   return (
     <section className="mb-7">
       {headerContent}
-      <div className="flex overflow-x-auto no-scrollbar gap-4 px-4 pb-2 snap-x snap-mandatory scroll-smooth overscroll-x-contain gpu-accelerated">
-        {tracks.map((track, i) => {
-          const thumbnail = getHighResImage(
-            track.thumbnails?.[track.thumbnails.length - 1]?.url,
-            300
-          );
-          const artistName = Array.isArray(track.artist)
-            ? track.artist.map((a) => a.name).join(', ')
-            : track.artist?.name || 'Unknown Artist';
-
-          return (
-            <div
-              key={`${track.videoId}-${i}`}
-              className="flex-none w-36 md:w-44 p-3 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.05] hover:border-white/[0.12] rounded-2xl cursor-pointer group snap-start transition-all duration-200 select-none shadow-sm flex flex-col gpu-accelerated content-auto"
-              style={{
-                touchAction: 'manipulation',
-                transform: 'translate3d(0, 0, 0)',
-                willChange: 'transform',
-              }}
-              onPointerDown={(e) => {
-                if (e.button === 0) playTrack(track, tracks, 'playlist', i);
-              }}
-            >
-              <div className="relative w-full aspect-square rounded-xl overflow-hidden mb-3 shadow-md bg-black/40 border border-white/5">
-                <Image
-                  src={thumbnail}
-                  alt={track.name}
-                  fill
-                  sizes="(max-width: 768px) 144px, 176px"
-                  priority={isFirstShelf && i < 4}
-                  loading={isFirstShelf && i < 4 ? undefined : 'lazy'}
-                  decoding="async"
-                  className="object-cover transition-transform duration-300 group-hover:scale-105"
-                />
-                <div className="absolute right-2 bottom-2 w-10 h-10 md:w-11 md:h-11 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 shadow-[0_8px_20px_rgba(29,185,84,0.4)] hover:scale-105 active:scale-95">
-                  <Play className="w-5 h-5 fill-current ml-0.5" />
-                </div>
-              </div>
-              <h4 className="text-sm font-bold text-white truncate leading-tight group-hover:text-[#1DB954] transition-colors">
-                {track.name}
-              </h4>
-              <p className="text-xs text-[#b3b3b3] truncate mt-1">{artistName}</p>
-            </div>
-          );
-        })}
+      <div
+        onScroll={handleContainerScroll}
+        onClickCapture={handleCaptureClick}
+        className="flex overflow-x-auto no-scrollbar gap-4 px-4 pb-2 snap-x snap-mandatory scroll-smooth overscroll-x-contain gpu-accelerated"
+      >
+        {tracks.map((track, i) => (
+          <HorizontalTrackItem
+            key={`${track.videoId}-${i}`}
+            track={track}
+            tracks={tracks}
+            index={i}
+            isFirstShelf={isFirstShelf}
+          />
+        ))}
       </div>
     </section>
   );

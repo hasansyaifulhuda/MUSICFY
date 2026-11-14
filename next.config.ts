@@ -15,7 +15,7 @@ const nextConfig: NextConfig = {
     removeConsole: process.env.NODE_ENV === 'production' ? { exclude: ['error', 'warn'] } : false,
   },
   experimental: {
-    optimizePackageImports: ['lucide-react', 'motion', 'idb'],
+    optimizePackageImports: ['lucide-react'],
   },
   images: {
     unoptimized: true,
@@ -126,7 +126,7 @@ const nextConfig: NextConfig = {
     ];
   },
   output: 'standalone',
-  transpilePackages: ['motion'],
+  transpilePackages: ['motion', 'framer-motion', 'motion-dom', 'motion-utils'],
   webpack: (config, { dev }) => {
     // HMR is disabled in AI Studio via DISABLE_HMR env var.
     if (dev && process.env.DISABLE_HMR === 'true') {

@@ -54,13 +54,13 @@ export const FloatingWidget = memo(function FloatingWidget() {
     <AnimatePresence>
       <motion.div
         drag
-        dragConstraints={{ top: -450, bottom: 20, left: -320, right: 20 }}
+        dragConstraints={{ top: -500, bottom: 20, left: -320, right: 20 }}
         dragElastic={0.15}
         initial={{ opacity: 0, scale: 0.85, y: 30 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.85, y: 30 }}
         transition={{ type: 'spring', damping: 20, stiffness: 260 }}
-        className="fixed bottom-24 right-4 sm:right-6 z-40 w-[300px] sm:w-[330px] glass-dock rounded-2xl p-2.5 shadow-2xl flex flex-col overflow-hidden select-none cursor-grab active:cursor-grabbing gpu-accelerated"
+        className="fixed bottom-[72px] md:bottom-28 right-3 sm:right-6 z-40 w-[calc(100%-24px)] max-w-[340px] sm:w-[330px] glass-dock rounded-2xl p-2.5 shadow-2xl flex flex-col overflow-hidden select-none cursor-grab active:cursor-grabbing gpu-accelerated"
         style={{
           boxShadow: '0 16px 48px rgba(0, 0, 0, 0.75), inset 0 1px 0 0 rgba(255, 255, 255, 0.15)',
           transform: 'translate3d(0, 0, 0)',

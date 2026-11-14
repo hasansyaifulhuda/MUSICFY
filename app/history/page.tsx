@@ -1,12 +1,170 @@
 'use client';
 
-import { ArrowLeft, Search, Trash2, X, AlertCircle, Clock, Play } from 'lucide-react';
+import { ArrowLeft, Search, Trash2, X, AlertCircle, Clock, Play, Heart, Music } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { usePlayerStore, Track } from '@/lib/store';
 import Image from 'next/image';
-import { getHighResImage } from '@/lib/utils';
-import { useEffect, useState, useMemo } from 'react';
+import { getHighResImage, cn } from '@/lib/utils';
+import { useEffect, useState, useMemo, useCallback, memo } from 'react';
 import { MarqueeText } from '@/components/MarqueeText';
+import { useTapGesture } from '@/hooks/useTapGesture';
+import { useMusic } from '@/context/MusicContext';
+
+const HistoryTrackItem = memo(function HistoryTrackItem({
+  item,
+  index,
+  filteredTracks,
+  onRemove,
+}: {
+  item: { track: Track; playedAt: number };
+  index: number;
+  filteredTracks: Track[];
+  onRemove: (videoId: string, playedAt: number) => void;
+}) {
+  const playTrack = usePlayerStore((state) => state.playTrack);
+  const isCurrent = usePlayerStore((state) => state.currentTrack?.videoId === item.track?.videoId);
+  const { isLiked, toggleLike } = useMusic();
+  const [imgError, setImgError] = useState(false);
+  const track = item.track;
+
+  const liked = Boolean(track?.videoId && isLiked(track.videoId));
+
+  const artistName = useMemo(
+    () =>
+      Array.isArray(track.artist)
+        ? track.artist.map((a: any) => a.name).join(', ')
+        : track.artist?.name || 'Unknown Artist',
+    [track.artist]
+  );
+  const thumbnail = useMemo(
+    () => getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120),
+    [track.thumbnails]
+  );
+
+  const formatDuration = (seconds?: number) => {
+    if (!seconds) return '';
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const handlePlay = useCallback(() => {
+    playTrack(track, filteredTracks);
+  }, [playTrack, track, filteredTracks]);
+
+  const tapGesture = useTapGesture({
+    onTap: handlePlay,
+    threshold: 8,
+  });
+
+  const handleLikePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+  }, []);
+
+  const handleLikeClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (track) {
+        toggleLike(track);
+      }
+    },
+    [track, toggleLike]
+  );
+
+  return (
+    <div
+      {...tapGesture}
+      className={cn(
+        "flex items-center py-2.5 px-3 md:py-2.5 md:px-3.5 rounded-xl hover:bg-white/[0.06] active:bg-white/[0.10] transition-colors duration-150 group cursor-pointer border-b border-white/[0.04] last:border-b-0",
+        isCurrent && "bg-white/[0.05]"
+      )}
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+    >
+      <div className="relative w-11 h-11 sm:w-12 sm:h-12 rounded-lg overflow-hidden shrink-0 shadow-sm bg-white/5 border border-white/[0.06]">
+        {thumbnail && !imgError ? (
+          <Image
+            src={thumbnail}
+            alt={track.name}
+            fill
+            sizes="48px"
+            priority={index < 4}
+            loading={index < 4 ? undefined : 'lazy'}
+            decoding="async"
+            className="object-cover"
+            onError={() => setImgError(true)}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-white/[0.08] text-white/30">
+            <Music className="w-5 h-5" />
+          </div>
+        )}
+        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+          <Play className="w-4 h-4 fill-white text-white ml-0.5" />
+        </div>
+      </div>
+
+      <div className="ml-3 sm:ml-3.5 flex-1 min-w-0 pr-2">
+        <MarqueeText
+          text={track.name}
+          className={`font-semibold text-sm leading-snug tracking-tight transition-colors ${
+            isCurrent ? 'text-[#1DB954]' : 'text-white group-hover:text-white'
+          }`}
+        />
+        <p className="text-xs text-white/60 truncate group-hover:text-white/80 transition-colors mt-0.5">
+          {artistName}
+        </p>
+      </div>
+
+      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+        {track.duration ? (
+          <span className="text-[11px] sm:text-xs text-white/40 font-mono tabular-nums shrink-0 px-1 sm:px-2">
+            {formatDuration(track.duration)}
+          </span>
+        ) : null}
+
+        <button
+          type="button"
+          onPointerDown={handleLikePointerDown}
+          onClick={handleLikeClick}
+          className="p-1.5 sm:p-2 text-white/40 hover:text-white transition-all cursor-pointer rounded-lg hover:bg-white/10 active:scale-90 shrink-0"
+          title={liked ? 'Hapus dari Lagu Disukai' : 'Sukai Lagu'}
+          aria-label={liked ? 'Hapus dari Lagu Disukai' : 'Sukai Lagu'}
+          style={{ touchAction: 'manipulation' }}
+        >
+          <Heart
+            className={cn(
+              'w-4 h-4 transition-transform duration-150',
+              liked ? 'fill-[#1DB954] text-[#1DB954] scale-105' : 'hover:scale-110'
+            )}
+          />
+        </button>
+
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            if (e.button === 0) {
+              e.stopPropagation();
+            }
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove(track.videoId, item.playedAt);
+          }}
+          className="p-1.5 sm:p-2 text-white/40 hover:text-red-400 hover:bg-white/10 rounded-lg transition-colors cursor-pointer shrink-0"
+          title="Hapus dari riwayat"
+          aria-label="Hapus dari riwayat"
+          style={{ touchAction: 'manipulation' }}
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+});
 
 export default function HistoryPage() {
   const router = useRouter();
@@ -53,66 +211,6 @@ export default function HistoryPage() {
     return date >= startOfWeek && date < today;
   });
   const olderHistory = filteredHistory.filter((item) => new Date(item.playedAt) < startOfWeek);
-
-  const formatDuration = (seconds?: number) => {
-    if (!seconds) return '';
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return ` • ${m}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const renderTrackItem = (item: { track: Track; playedAt: number }, index: number) => {
-    const track = item.track;
-    const artistName = Array.isArray(track.artist)
-      ? track.artist.map((a: any) => a.name).join(', ')
-      : track.artist?.name || 'Unknown Artist';
-    const thumbnail = getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120);
-
-    return (
-      <div
-        key={`${item.playedAt}-${track.videoId}`}
-        className="flex items-center gap-3.5 py-2.5 px-3 hover:bg-white/10 rounded-xl transition-colors group cursor-pointer"
-        onClick={() => playTrack(track, filteredHistory.map((h) => h.track))}
-      >
-        <div className="relative w-12 h-12 rounded-lg overflow-hidden shrink-0 shadow-md bg-white/5">
-          <Image
-            src={thumbnail}
-            alt={track.name}
-            fill
-            sizes="56px"
-            priority={index < 4}
-            loading={index < 4 ? undefined : 'lazy'}
-            decoding="async"
-            className="object-cover"
-          />
-          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-            <Play className="w-5 h-5 fill-white text-white ml-0.5" />
-          </div>
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <MarqueeText text={track.name} className="text-white font-semibold text-base group-hover:text-[#1DB954] transition-colors" />
-          <MarqueeText
-            text={`${artistName}${formatDuration(track.duration)}`}
-            className="text-white/60 text-sm mt-0.5"
-          />
-        </div>
-
-        {/* Delete individual history item button */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            removeFromHistory(track.videoId, item.playedAt);
-          }}
-          className="p-2 text-white/40 hover:text-red-400 hover:bg-white/10 rounded-full transition-colors opacity-0 group-hover:opacity-100 cursor-pointer"
-          title="Hapus dari riwayat"
-          aria-label="Hapus dari riwayat"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
-    );
-  };
 
   return (
     <main className="min-h-screen pb-32 max-w-4xl mx-auto px-4 pt-4">
@@ -183,21 +281,51 @@ export default function HistoryPage() {
               <Clock className="w-4 h-4 text-[#1DB954]" />
               <span>Hari ini</span>
             </h2>
-            <div className="space-y-0.5">{todayHistory.map(renderTrackItem)}</div>
+            <div className="space-y-0.5">
+              {todayHistory.map((item, index) => (
+                <HistoryTrackItem
+                  key={`${item.playedAt}-${item.track?.videoId}`}
+                  item={item}
+                  index={index}
+                  filteredTracks={filteredHistory.map((h) => h.track)}
+                  onRemove={removeFromHistory}
+                />
+              ))}
+            </div>
           </div>
         )}
 
         {thisWeekHistory.length > 0 && (
           <div>
             <h2 className="text-lg font-bold text-white px-2 mb-2">Minggu ini</h2>
-            <div className="space-y-0.5">{thisWeekHistory.map(renderTrackItem)}</div>
+            <div className="space-y-0.5">
+              {thisWeekHistory.map((item, index) => (
+                <HistoryTrackItem
+                  key={`${item.playedAt}-${item.track?.videoId}`}
+                  item={item}
+                  index={index}
+                  filteredTracks={filteredHistory.map((h) => h.track)}
+                  onRemove={removeFromHistory}
+                />
+              ))}
+            </div>
           </div>
         )}
 
         {olderHistory.length > 0 && (
           <div>
             <h2 className="text-lg font-bold text-white px-2 mb-2">Lebih lama</h2>
-            <div className="space-y-0.5">{olderHistory.map(renderTrackItem)}</div>
+            <div className="space-y-0.5">
+              {olderHistory.map((item, index) => (
+                <HistoryTrackItem
+                  key={`${item.playedAt}-${item.track?.videoId}`}
+                  item={item}
+                  index={index}
+                  filteredTracks={filteredHistory.map((h) => h.track)}
+                  onRemove={removeFromHistory}
+                />
+              ))}
+            </div>
           </div>
         )}
 

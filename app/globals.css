@@ -244,9 +244,17 @@ button, a, [role="button"], input, select {
     -webkit-text-fill-color: inherit;
   }
 
+  /* Default Translation: White with medium opacity and lighter weight */
+  .musicfy-lyric-item .musicfy-lyric-translation {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    font-weight: 500 !important;
+    opacity: 0.50 !important;
+  }
+
   /* Active Lyric: Pure White #FFFFFF, Opacity 100%, Font Weight 800 */
   .musicfy-lyric-item.lyric-active,
-  .musicfy-lyric-item.lyric-active p,
+  .musicfy-lyric-item.lyric-active p:not(.musicfy-lyric-translation),
   .musicfy-lyric-item.lyric-active span {
     color: #FFFFFF !important;
     -webkit-text-fill-color: #FFFFFF !important;
@@ -254,9 +262,17 @@ button, a, [role="button"], input, select {
     font-weight: 800 !important;
   }
 
+  /* Active Translation: Pure White #FFFFFF, Opacity 75%, Font Weight 500 */
+  .musicfy-lyric-item.lyric-active .musicfy-lyric-translation {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    opacity: 0.75 !important;
+    font-weight: 500 !important;
+  }
+
   /* Inactive Lyric - Previous: Soft Gray #A1A1AA, Opacity ~35%, Font Weight 500 */
   .musicfy-lyric-item.lyric-prev,
-  .musicfy-lyric-item.lyric-prev p,
+  .musicfy-lyric-item.lyric-prev p:not(.musicfy-lyric-translation),
   .musicfy-lyric-item.lyric-prev span {
     color: #A1A1AA !important;
     -webkit-text-fill-color: #A1A1AA !important;
@@ -264,9 +280,16 @@ button, a, [role="button"], input, select {
     font-weight: 500 !important;
   }
 
+  .musicfy-lyric-item.lyric-prev .musicfy-lyric-translation {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    opacity: 0.45 !important;
+    font-weight: 400 !important;
+  }
+
   /* Inactive Lyric - Next: Soft Gray #A1A1AA, Opacity ~45%, Font Weight 500 */
   .musicfy-lyric-item.lyric-next,
-  .musicfy-lyric-item.lyric-next p,
+  .musicfy-lyric-item.lyric-next p:not(.musicfy-lyric-translation),
   .musicfy-lyric-item.lyric-next span {
     color: #A1A1AA !important;
     -webkit-text-fill-color: #A1A1AA !important;
@@ -274,9 +297,16 @@ button, a, [role="button"], input, select {
     font-weight: 500 !important;
   }
 
+  .musicfy-lyric-item.lyric-next .musicfy-lyric-translation {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    opacity: 0.50 !important;
+    font-weight: 400 !important;
+  }
+
   /* Inactive Lyric - Distant: Soft Gray #A1A1AA, Opacity ~20%, Font Weight 500 */
   .musicfy-lyric-item.lyric-distant,
-  .musicfy-lyric-item.lyric-distant p,
+  .musicfy-lyric-item.lyric-distant p:not(.musicfy-lyric-translation),
   .musicfy-lyric-item.lyric-distant span {
     color: #A1A1AA !important;
     -webkit-text-fill-color: #A1A1AA !important;
@@ -284,17 +314,30 @@ button, a, [role="button"], input, select {
     font-weight: 500 !important;
   }
 
+  .musicfy-lyric-item.lyric-distant .musicfy-lyric-translation {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    opacity: 0.25 !important;
+    font-weight: 400 !important;
+  }
+
   /* Inactive Lyric Hover */
   .musicfy-lyric-item:not(.lyric-active):hover,
-  .musicfy-lyric-item:not(.lyric-active):hover p,
+  .musicfy-lyric-item:not(.lyric-active):hover p:not(.musicfy-lyric-translation),
   .musicfy-lyric-item:not(.lyric-active):hover span {
     opacity: 0.85 !important;
     color: #FFFFFF !important;
     -webkit-text-fill-color: #FFFFFF !important;
   }
 
+  .musicfy-lyric-item:not(.lyric-active):hover .musicfy-lyric-translation {
+    opacity: 0.70 !important;
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+  }
+
   .pb-safe {
-    padding-bottom: env(safe-area-inset-bottom, 16px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
 

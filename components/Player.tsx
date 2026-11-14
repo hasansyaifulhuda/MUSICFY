@@ -51,7 +51,6 @@ import { useLyricsOffsetStore } from '@/lib/lyricsOffsetStore';
 import { autoCalibrateSilenceOffset } from '@/lib/smartLyricsSync';
 import { useMusic } from '@/context/MusicContext';
 import { useSleepTimerStore } from '@/lib/sleepTimerStore';
-import { useEqualizerStore } from '@/lib/audioEffects';
 import { useFloatingWidgetStore } from '@/lib/floatingWidgetStore';
 import { deduplicatedFetch } from '@/lib/clientDeduplication';
 import dynamic from 'next/dynamic';
@@ -65,11 +64,6 @@ const AudioVisualizer = dynamic(
 
 const FullScreenLyrics = dynamic(
   () => import('./FullScreenLyrics').then((m) => m.FullScreenLyrics),
-  { ssr: false, loading: () => null }
-);
-
-const FloatingLyricsPill = dynamic(
-  () => import('./FloatingLyricsPill').then((m) => m.FloatingLyricsPill),
   { ssr: false, loading: () => null }
 );
 
@@ -103,15 +97,15 @@ export function Player() {
   const removeFromQueue = usePlayerStore((state) => state.removeFromQueue);
   const setTrackToAdd = usePlayerStore((state) => state.setTrackToAdd);
 
-  // Sleep Timer & Equalizer Store State
+  // Sleep Timer Store State
   const isSleepTimerActive = useSleepTimerStore((state) => state.isActive);
   const openSleepTimerModal = useSleepTimerStore((state) => state.openModal);
-  const isEqualizerEnabled = useEqualizerStore((state) => state.isEnabled);
-  const openEqualizerModal = useEqualizerStore((state) => state.openModal);
 
   // Floating Widget & Full-Screen Lyrics State (Batch 2)
   const openFloatingWidget = useFloatingWidgetStore((state) => state.openWidget);
-  const [isFullScreenLyricsOpen, setIsFullScreenLyricsOpen] = useState(false);
+  const isFloatingWidgetActive = useFloatingWidgetStore((state) => Boolean(state.isEnabled && state.isOpen));
+  const isFullScreenLyricsOpen = usePlayerStore((state) => state.isFullScreenLyricsOpen);
+  const setIsFullScreenLyricsOpen = usePlayerStore((state) => state.setFullScreenLyricsOpen);
 
   // Music Context (Interruption-Aware Playback, Audio Focus, Seek, Volume & Liked Songs)
   const music = useMusic();
@@ -234,10 +228,9 @@ export function Player() {
     }
 
     let isCancelled = false;
+    let activePassController: AbortController | null = null;
     setIsLyricsLoading(true);
     setLyricsSearchPass(1);
-
-    const abortController = new AbortController();
 
     const loadLyricsForCurrentTrack = async () => {
       // 2. TIER 2: ASYNC INDEXEDDB DEEP CACHE (Offline Track + Compressed Metadata Cache)
@@ -269,7 +262,7 @@ export function Player() {
       // 4. CASCADING 5-PASS AUTOMATIC RETRY SEARCH
       // Automatically iterates through metadata variations and fallback queries (up to 5 passes)
       // until valid synchronized or plain lyrics are found.
-      const dur = Math.round(duration || currentTrackDuration || 200);
+      const dur = Math.round(currentTrackDuration || usePlayerStore.getState().duration || 200);
 
       // Fast-bail for long tracks (1-hour mixes, full albums, DJ sets, cover compilations)
       // Prevents infinite loading and wasted network queries when lyrics naturally do not exist
@@ -359,6 +352,7 @@ export function Player() {
         }
 
         const passController = new AbortController();
+        activePassController = passController;
         const passTimer = setTimeout(() => {
           try {
             passController.abort('PASS_TIMEOUT');
@@ -429,6 +423,10 @@ export function Player() {
         } catch {
           clearTimeout(passTimer);
           // Pass failed or timed out: proceed to next fallback pass automatically
+        } finally {
+          if (activePassController === passController) {
+            activePassController = null;
+          }
         }
 
         // Brief 250ms pause before attempting next fallback pass
@@ -463,11 +461,14 @@ export function Player() {
       } else if (idleId) {
         clearTimeout(idleId);
       }
-      try {
-        abortController.abort();
-      } catch {}
+      if (activePassController) {
+        try {
+          activePassController.abort();
+        } catch {}
+        activePassController = null;
+      }
     };
-  }, [currentVideoId, currentTrackName, currentArtistName, currentTrackDuration, duration, lyricsRetryCount]);
+  }, [currentVideoId, currentTrackName, currentArtistName, currentTrackDuration, lyricsRetryCount]);
 
   // 3. Toggle Like Song
   const handleLike = useCallback(
@@ -694,7 +695,7 @@ export function Player() {
       {/* ========================================================================= */}
       <div className="md:hidden">
         <AnimatePresence>
-          {!isExpanded && (
+          {!isExpanded && !isFloatingWidgetActive && (
             <motion.div
               initial={{ y: 50, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
@@ -1013,28 +1014,6 @@ export function Player() {
               if (e.button === 0) {
                 e.stopPropagation();
                 e.preventDefault();
-                openEqualizerModal?.();
-              }
-            }}
-            className={cn(
-              'relative p-1.5 hover:text-white transition-colors cursor-pointer hidden lg:block',
-              isEqualizerEnabled ? 'text-[#1DB954]' : 'hover:text-white'
-            )}
-            style={{ touchAction: 'manipulation' }}
-            title="Equalizer Suara"
-          >
-            <SlidersHorizontal className="w-5 h-5" />
-            {isEqualizerEnabled && (
-              <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-[#1DB954] rounded-full" />
-            )}
-          </button>
-
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              if (e.button === 0) {
-                e.stopPropagation();
-                e.preventDefault();
                 openSleepTimerModal?.();
               }
             }}
@@ -1223,25 +1202,6 @@ export function Player() {
                     onClick={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
-                      openEqualizerModal?.();
-                    }}
-                    className={cn(
-                      'relative w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors cursor-pointer',
-                      isEqualizerEnabled ? 'text-[#1DB954]' : 'text-white/80 hover:text-white'
-                    )}
-                    title="Equalizer Suara"
-                  >
-                    <SlidersHorizontal className="w-4 h-4" />
-                    {isEqualizerEnabled && (
-                      <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-[#1DB954] rounded-full" />
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
                       openSleepTimerModal?.();
                     }}
                     className={cn(
@@ -1310,7 +1270,7 @@ export function Player() {
                     aria-label="Menu Utilitas Pemutar"
                   >
                     <MoreVertical className="w-4 h-4" />
-                    {(isEqualizerEnabled || isSleepTimerActive || isDownloading) && (
+                    {(isSleepTimerActive || isDownloading) && (
                       <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#1DB954] ring-2 ring-black animate-pulse" />
                     )}
                   </button>
@@ -1342,41 +1302,7 @@ export function Player() {
                             <span className="text-[#1DB954] font-semibold text-[9px]">MusicFY</span>
                           </div>
 
-                          {/* 1. Equalizer */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setIsMobileUtilityMenuOpen(false);
-                              openEqualizerModal?.();
-                            }}
-                            className={cn(
-                              'flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors cursor-pointer w-full',
-                              isEqualizerEnabled ? 'bg-[#1DB954]/15 text-[#1DB954]' : 'hover:bg-white/10 text-white/90'
-                            )}
-                          >
-                            <div
-                              className={cn(
-                                'w-8 h-8 rounded-lg flex items-center justify-center shrink-0',
-                                isEqualizerEnabled ? 'bg-[#1DB954]/20 text-[#1DB954]' : 'bg-white/10 text-white/70'
-                              )}
-                            >
-                              <SlidersHorizontal className="w-4 h-4" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center justify-between">
-                                <p className="text-xs font-semibold text-white">Equalizer Suara</p>
-                                {isEqualizerEnabled && (
-                                  <span className="text-[10px] font-bold text-[#1DB954] bg-[#1DB954]/20 px-1.5 py-0.5 rounded-full">
-                                    Aktif
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-[11px] text-white/50 truncate">Atur bass & frekuensi audio</p>
-                            </div>
-                          </button>
-
-                          {/* 2. Sleep Timer */}
+                          {/* 1. Sleep Timer */}
                           <button
                             type="button"
                             onClick={(e) => {
@@ -1850,16 +1776,6 @@ export function Player() {
           </ComponentErrorBoundary>
         )}
       </AnimatePresence>
-
-      {/* Compact Floating Lyrics Pill Quick View */}
-      <FloatingLyricsPill
-        lyrics={lyrics}
-        isSynced={isSyncedLyrics}
-        onOpenLyrics={() => {
-          setExpanded?.(true);
-          setIsFullScreenLyricsOpen(true);
-        }}
-      />
     </>
   );
 }

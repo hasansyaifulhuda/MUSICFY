@@ -77,7 +77,6 @@ const MONITORED_JSON_KEYS = [
   'player-storage',
   'pmusic_audio_session_v1',
   'pmusic_playback_resume',
-  'pmusic_equalizer_settings_v1',
   'pmusic_liked_tracks',
   'pmusic_custom_theme',
   'pmusic_crossfade_v1',

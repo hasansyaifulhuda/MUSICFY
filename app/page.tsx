@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef, memo } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
@@ -17,11 +17,13 @@ import {
   HardDriveDownload,
   Info,
   Sparkles,
+  Heart,
+  User,
 } from 'lucide-react';
 import { db, OfflineTrack } from '@/lib/db';
 import { Track, usePlayerStore } from '@/lib/store';
 import { useMusic } from '@/context/MusicContext';
-import { getHighResImage } from '@/lib/utils';
+import { getHighResImage, cn } from '@/lib/utils';
 import { MarqueeText } from '@/components/MarqueeText';
 import { toast } from '@/lib/toast';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
@@ -30,6 +32,447 @@ import { CommunityPlaylistCard } from '@/components/CommunityPlaylistCard';
 import { HomeSkeleton } from '@/components/HomeSkeleton';
 import { Equalizer } from '@/components/Equalizer';
 import { prefetchArtist, getHomeCache, setHomeCache } from '@/lib/clientDataCache';
+import { useTapGesture } from '@/hooks/useTapGesture';
+
+const HomeQuickGridItem = memo(function HomeQuickGridItem({
+  track,
+  idx,
+  onlineQuickGridItems,
+  isCurrent,
+}: {
+  track: Track;
+  idx: number;
+  onlineQuickGridItems: Track[];
+  isCurrent: boolean;
+}) {
+  const { playTrack } = useMusic();
+  const thumb = useMemo(
+    () => getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120),
+    [track.thumbnails]
+  );
+
+  const handlePlay = useCallback(() => {
+    playTrack(track, onlineQuickGridItems, 'similar', idx);
+  }, [playTrack, track, onlineQuickGridItems, idx]);
+
+  const tapGesture = useTapGesture({
+    onTap: handlePlay,
+    threshold: 8,
+  });
+
+  return (
+    <div
+      {...tapGesture}
+      className={`flex items-center transition-all duration-200 rounded-xl overflow-hidden cursor-pointer group shadow-sm select-none relative border ${
+        isCurrent
+          ? 'bg-white/[0.18] border-white/20'
+          : 'bg-white/[0.05] hover:bg-white/[0.10] border-white/[0.06]'
+      }`}
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+    >
+      <div className="relative w-12 h-12 md:w-16 md:h-16 shrink-0 shadow bg-black/40">
+        <Image
+          src={thumb}
+          alt={track.name}
+          fill
+          sizes="64px"
+          className="object-cover"
+          priority={idx < 3}
+          loading={idx < 3 ? undefined : 'lazy'}
+          decoding="async"
+        />
+      </div>
+      <div className="flex-1 min-w-0 px-3 flex items-center justify-between">
+        <span
+          className={`text-xs md:text-sm font-bold truncate pr-2 leading-snug ${
+            isCurrent ? 'text-[#1DB954]' : 'text-white'
+          }`}
+        >
+          {track.name}
+        </span>
+        <button
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            playTrack(track, onlineQuickGridItems, 'similar', idx);
+          }}
+          className="w-9 h-9 md:w-11 md:h-11 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-[0_8px_16px_rgba(29,185,84,0.4)] hover:scale-105 active:scale-95 transition-all duration-200 shrink-0 cursor-pointer"
+          title="Putar"
+        >
+          <Play className="w-4 h-4 md:w-5 md:h-5 fill-current ml-0.5" />
+        </button>
+      </div>
+    </div>
+  );
+});
+
+const HomeQuickPickItem = memo(function HomeQuickPickItem({
+  track,
+  quickPicksTracks,
+  chunkIndex,
+  itemIndex,
+  isCurrent,
+}: {
+  track: Track;
+  quickPicksTracks: Track[];
+  chunkIndex: number;
+  itemIndex: number;
+  isCurrent: boolean;
+}) {
+  const { playTrack } = useMusic();
+  const thumb = useMemo(
+    () => getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 100),
+    [track.thumbnails]
+  );
+  const art = useMemo(
+    () =>
+      Array.isArray(track.artist)
+        ? track.artist.map((a: any) => a.name).join(', ')
+        : track.artist?.name || 'Unknown Artist',
+    [track.artist]
+  );
+
+  const handlePlay = useCallback(() => {
+    playTrack(track, quickPicksTracks, 'similar');
+  }, [playTrack, track, quickPicksTracks]);
+
+  const tapGesture = useTapGesture({
+    onTap: handlePlay,
+    threshold: 8,
+  });
+
+  return (
+    <div
+      {...tapGesture}
+      className="flex items-center gap-3 cursor-pointer group hover:bg-white/[0.08] active:bg-white/[0.12] p-2 rounded-xl transition-all duration-150 select-none border border-transparent hover:border-white/5"
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+    >
+      <div className="relative w-12 h-12 rounded-xl overflow-hidden shrink-0 shadow-md bg-white/5 border border-white/5">
+        <Image
+          src={thumb}
+          alt={track.name}
+          fill
+          sizes="48px"
+          priority={chunkIndex === 0 && itemIndex < 3}
+          loading={chunkIndex === 0 && itemIndex < 3 ? undefined : 'lazy'}
+          decoding="async"
+          className="object-cover"
+        />
+        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+          <Play className="w-4 h-4 fill-white text-white ml-0.5" />
+        </div>
+      </div>
+      <div className="flex-1 min-w-0">
+        <h4
+          className={`font-semibold text-sm truncate transition-colors leading-tight ${
+            isCurrent ? 'text-[#1DB954]' : 'text-white group-hover:text-[#1DB954]'
+          }`}
+        >
+          {track.name}
+        </h4>
+        <p className="text-[#b3b3b3] text-xs truncate mt-0.5">{art}</p>
+      </div>
+    </div>
+  );
+});
+
+const CURATED_POPULAR_ARTISTS = [
+  {
+    artistId: 'UC_DHlXllTSMB8pTC38_leFg',
+    name: 'Tulus',
+    thumbnails: [
+      { url: 'https://yt3.googleusercontent.com/h8P1jEIZLM8lkMxNA6Nbq98b43wcqllJSNmcZTCRPAB-F6rG_0Nqw5w7fwou0PN1QGwSW5viwWD5NV0=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+  {
+    artistId: 'UCa1eYN7cwBQrOFQLt_K8c-Q',
+    name: 'Mahalini',
+    thumbnails: [
+      { url: 'https://yt3.googleusercontent.com/VdgLqr3Sno_U1IXj9qzk43azloCsjBeDy6MpFjfD8kMmco0AeL81qow0cpHynDfpaVlujCY11O7QO4d6=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+  {
+    artistId: 'UCoy8sTKrImqfSq6TYOSW81A',
+    name: 'Sheila On 7',
+    thumbnails: [
+      { url: 'https://lh3.googleusercontent.com/ZBI5XEhdUvkE59Kr7HKZYIjoopuA_kC0uPAWNsEw-EmLfTtRaXuDEv-qYWTv_lahkpA8Yuhe7P-sO2Y=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+  {
+    artistId: 'UCCMnLkUAdm_NGMDTTC-nvDQ',
+    name: 'Noah',
+    thumbnails: [
+      { url: 'https://lh3.googleusercontent.com/6xEP8mOA5xguCiwfeNq08D1o0GK7iPSNMwp80jJpyxw4bwdOgo4EO-8T4rnb8gv3_283YEoQsZvRLD4k=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+  {
+    artistId: 'UC1COz5-ymC7FALbIPii5dwQ',
+    name: 'Lyodra',
+    thumbnails: [
+      { url: 'https://yt3.googleusercontent.com/fX1X2u4D_p36NXWXqmOJneksx8UuAC4YaZGU4IKShOMX4NtaA3CCKyMoFDh4B3WHEIjL6fg7Z4zwb0s=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+  {
+    artistId: 'UCbwDovhiwBefYbJWw8aYNMA',
+    name: 'Iwan Fals',
+    thumbnails: [
+      { url: 'https://lh3.googleusercontent.com/zau9NHD_yabaiGfvwf52ckNIP2KVKh9RDZgMsGkAnAvb2ZJxw9P9icgFE8ROabj9S5Dq3HS5mhO9LY8=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+  {
+    artistId: 'UCPLQQRzfvggMf4tQ9KougTQ',
+    name: 'Judika',
+    thumbnails: [
+      { url: 'https://yt3.googleusercontent.com/Vr6B71VpRIpPBcnWMObuZid84nmmfe6jFIXJd7pLdcvSF8KkMx-CHrUZiMZdMnGnwOekYt_J56EaLpvT=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+  {
+    artistId: 'UC5XiB9X7a-ZzwiM-Xk0e-7g',
+    name: 'ROSSA',
+    thumbnails: [
+      { url: 'https://yt3.googleusercontent.com/WD6ITlanyUoaEogBdR7BlJVSOSa_C8vUsR-P376x9Pfdr1GbPr8FX8NIOkxWDTTeWwr9TDvieQ-Z=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+  {
+    artistId: 'UCDkv8TdCmYHL9sep2Ag3SFw',
+    name: 'Geisha',
+    thumbnails: [
+      { url: 'https://lh3.googleusercontent.com/o7133qRp70fjJZi5vqQrZ5B66FIbfiJ9ELWq3YaAQR05uVvIY0fcW4E4U33cBdzxpGR8O1Gy7_A7OakI=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+  {
+    artistId: 'UCiItEIDWUhb8ySYckd8hZZQ',
+    name: 'Lesty',
+    thumbnails: [
+      { url: 'https://lh3.googleusercontent.com/F6haU7UfLQ_LFRkD1BPoF_SB38x46bmqW8LxONV3Q91sW_SR5mJ1myOQPaB3AUB711KtqgmloGP9Alie=w400-h400-p-l90-rj', width: 400, height: 400 },
+    ],
+  },
+];
+
+const HomeOfflineTrackItem = memo(function HomeOfflineTrackItem({
+  item,
+  index,
+  filteredOfflineTracks,
+  isCurrent,
+  isPlaying,
+}: {
+  item: OfflineTrack;
+  index: number;
+  filteredOfflineTracks: OfflineTrack[];
+  isCurrent: boolean;
+  isPlaying: boolean;
+}) {
+  const { playTrack, isLiked, toggleLike } = useMusic();
+  const [imgError, setImgError] = useState(false);
+  const track = item.track;
+  const liked = Boolean(track?.videoId && isLiked(track.videoId));
+
+  const thumb = useMemo(
+    () => getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120),
+    [track.thumbnails]
+  );
+  const artistName = useMemo(
+    () =>
+      Array.isArray(track.artist)
+        ? track.artist.map((a: any) => a.name).join(', ')
+        : track.artist?.name || 'Unknown Artist',
+    [track.artist]
+  );
+
+  const handlePlay = useCallback(() => {
+    const allTracks = filteredOfflineTracks.map((t) => t.track);
+    playTrack(track, allTracks, 'playlist', index);
+  }, [playTrack, track, filteredOfflineTracks, index]);
+
+  const tapGesture = useTapGesture({
+    onTap: handlePlay,
+    threshold: 8,
+  });
+
+  const handleLikePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+  }, []);
+
+  const handleLikeClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (track) {
+        toggleLike(track);
+      }
+    },
+    [track, toggleLike]
+  );
+
+  return (
+    <div
+      {...tapGesture}
+      className={cn(
+        "flex items-center py-2.5 px-3 md:py-2.5 md:px-3.5 rounded-xl transition-colors duration-150 cursor-pointer group select-none border-b border-white/[0.04] last:border-b-0",
+        isCurrent ? "bg-white/[0.08]" : "hover:bg-white/[0.06] active:bg-white/[0.10]"
+      )}
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+    >
+      <div className="w-7 text-center text-xs md:text-sm text-white/40 group-hover:text-white/80 font-mono shrink-0 mr-1 tabular-nums">
+        {isCurrent && isPlaying ? <Equalizer size="sm" /> : index + 1}
+      </div>
+
+      <div className="relative w-11 h-11 sm:w-12 sm:h-12 rounded-lg overflow-hidden shrink-0 shadow-sm bg-white/5 border border-white/[0.06]">
+        {thumb && !imgError ? (
+          <Image
+            src={thumb}
+            alt={track.name}
+            fill
+            sizes="48px"
+            loading="lazy"
+            decoding="async"
+            className="object-cover"
+            onError={() => setImgError(true)}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-white/[0.08] text-white/30">
+            <Music className="w-5 h-5" />
+          </div>
+        )}
+        <div className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-[#1DB954] flex items-center justify-center shadow">
+          <CheckCircle2 className="w-2.5 h-2.5 text-black stroke-[3]" />
+        </div>
+      </div>
+
+      <div className="ml-3 sm:ml-3.5 flex-1 min-w-0 pr-2">
+        <MarqueeText
+          text={track.name}
+          className={`font-semibold text-sm leading-snug tracking-tight ${
+            isCurrent ? 'text-[#1DB954]' : 'text-white'
+          }`}
+        />
+        <p className="text-xs text-white/60 truncate group-hover:text-white/80 transition-colors mt-0.5">{artistName}</p>
+      </div>
+
+      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+        <span className="text-[11px] sm:text-xs text-white/40 font-mono tabular-nums shrink-0 px-1 sm:px-2">
+          {formatDuration(track.duration)}
+        </span>
+
+        <button
+          type="button"
+          onPointerDown={handleLikePointerDown}
+          onClick={handleLikeClick}
+          className="p-1.5 sm:p-2 text-white/40 hover:text-white transition-all cursor-pointer rounded-lg hover:bg-white/10 active:scale-90 shrink-0"
+          title={liked ? 'Hapus dari Lagu Disukai' : 'Sukai Lagu'}
+          aria-label={liked ? 'Hapus dari Lagu Disukai' : 'Sukai Lagu'}
+          style={{ touchAction: 'manipulation' }}
+        >
+          <Heart
+            className={cn(
+              'w-4 h-4 transition-transform duration-150',
+              liked ? 'fill-[#1DB954] text-[#1DB954] scale-105' : 'hover:scale-110'
+            )}
+          />
+        </button>
+
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            if (e.button === 0) e.stopPropagation();
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            handlePlay();
+          }}
+          className={`w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+            isCurrent
+              ? 'bg-[#1DB954] text-black opacity-100 shadow'
+              : 'bg-white/10 text-white opacity-0 group-hover:opacity-100 hover:bg-[#1DB954] hover:text-black'
+          }`}
+          title="Putar"
+        >
+          <Play className="w-3.5 h-3.5 fill-current ml-0.5" />
+        </button>
+      </div>
+    </div>
+  );
+});
+
+const PopularArtistCard = memo(function PopularArtistCard({
+  artist,
+  index,
+}: {
+  artist: any;
+  index: number;
+}) {
+  const router = useRouter();
+  const [imgError, setImgError] = useState(false);
+  const artistName = artist.name || 'Artis';
+  const thumb = useMemo(
+    () => getHighResImage(artist.thumbnails?.[artist.thumbnails.length - 1]?.url, 400),
+    [artist.thumbnails]
+  );
+
+  const artistId = artist?.artistId;
+  const handleNavigate = useCallback(() => {
+    if (artistId) {
+      router.push(`/artist/${artistId}`);
+    }
+  }, [router, artistId]);
+
+  const tapGesture = useTapGesture({
+    onTap: handleNavigate,
+    threshold: 8,
+  });
+
+  return (
+    <div
+      {...tapGesture}
+      onMouseEnter={() => artist?.artistId && prefetchArtist(artist.artistId)}
+      className="flex-none w-36 md:w-44 p-3 bg-white/[0.03] hover:bg-white/[0.08] rounded-2xl cursor-pointer group snap-start transition-colors duration-200 select-none shadow-sm flex flex-col items-center text-center border border-white/[0.04] hover:border-white/[0.08]"
+      style={{
+        transform: 'translate3d(0, 0, 0)',
+        willChange: 'transform',
+      }}
+    >
+      <div className="relative w-28 h-28 md:w-36 md:h-36 rounded-full overflow-hidden shadow-xl bg-neutral-900 border border-white/10 mb-3 group-hover:scale-105 transition-transform duration-200 aspect-square">
+        {thumb && !imgError ? (
+          <Image
+            src={thumb}
+            alt={artistName}
+            fill
+            sizes="(max-width: 768px) 112px, 144px"
+            priority={index < 3}
+            loading={index < 3 ? undefined : 'lazy'}
+            decoding="async"
+            className="object-cover"
+            onError={() => setImgError(true)}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-white/10 to-white/5 text-white/40">
+            <User className="w-10 h-10 md:w-12 md:h-12" />
+          </div>
+        )}
+        <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+          <div className="w-10 h-10 md:w-11 md:h-11 rounded-full bg-[#1DB954] text-black flex items-center justify-center shadow-lg transform translate-y-1 group-hover:translate-y-0 transition-transform">
+            <Play className="w-5 h-5 fill-current ml-0.5" />
+          </div>
+        </div>
+      </div>
+      <div className="w-full px-1">
+        <span className="text-sm font-bold text-white truncate block group-hover:text-[#1DB954] transition-colors">
+          {artistName}
+        </span>
+        <span className="text-xs text-white/50 block mt-0.5">Artis</span>
+      </div>
+    </div>
+  );
+});
 
 const HorizontalScroll = dynamic(
   () => import('@/components/HorizontalScroll').then((m) => m.HorizontalScroll),
@@ -111,6 +554,24 @@ export default function Home() {
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const history = usePlayerStore((state) => state.history);
 
+  const isQuickPicksScrollingRef = useRef(false);
+  const quickPicksScrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleQuickPicksScroll = useCallback(() => {
+    isQuickPicksScrollingRef.current = true;
+    if (quickPicksScrollTimeoutRef.current) clearTimeout(quickPicksScrollTimeoutRef.current);
+    quickPicksScrollTimeoutRef.current = setTimeout(() => {
+      isQuickPicksScrollingRef.current = false;
+    }, 150);
+  }, []);
+
+  const handleQuickPicksClickCapture = useCallback((e: React.MouseEvent) => {
+    if (isQuickPicksScrollingRef.current) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, []);
+
   // -------------------------------------------------------------
   // Offline State (IndexedDB)
   // -------------------------------------------------------------
@@ -151,7 +612,11 @@ export default function Home() {
       const dials = shuffleArray(pools['speedDial'] || []).slice(0, 30);
       const picks = shuffleArray(pools['quickPicks'] || []).slice(0, 16);
       const playlists = shuffleArray(pools['community'] || []).slice(0, 10);
-      const arts = shuffleArray(pools['artists'] || []).slice(0, 12);
+      const rawArts = (pools['artists'] || []).filter(
+        (a: any) => a && (a.artistId || a.id) && a.name && a.type !== 'ALBUM' && a.type !== 'SONG'
+      );
+      const combinedArts = rawArts.length >= 6 ? rawArts : [...rawArts, ...CURATED_POPULAR_ARTISTS];
+      const arts = shuffleArray(combinedArts).slice(0, 14);
 
       const cats = catsConfig.map((cat) => {
         const poolItems = pools[cat.key] || cat.items || [];
@@ -494,9 +959,6 @@ export default function Home() {
                 return (
                   <button
                     key={pill}
-                    onPointerDown={(e) => {
-                      if (e.button === 0) setActiveOnlineFilter(pill);
-                    }}
                     onClick={() => setActiveOnlineFilter(pill)}
                     style={{ touchAction: 'manipulation' }}
                     className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs md:text-sm font-bold transition-all select-none snap-start cursor-pointer shrink-0 ${
@@ -556,62 +1018,15 @@ export default function Home() {
           {activeOnlineFilter === 'Semua' && onlineQuickGridItems.length > 0 && (
             <section className="mb-8">
               <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2.5 md:gap-3">
-                {onlineQuickGridItems.map((track, idx) => {
-                  const thumb = getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 120);
-                  const isCurrent = currentVideoId === track.videoId;
-                  return (
-                    <div
-                      key={`quick-grid-${track.videoId}-${idx}`}
-                      onPointerDown={(e) => {
-                        if (e.button === 0) playTrack(track, onlineQuickGridItems, 'similar', idx);
-                      }}
-                      onClick={() => playTrack(track, onlineQuickGridItems, 'similar', idx)}
-                      style={{ touchAction: 'manipulation' }}
-                      className={`flex items-center transition-all duration-200 rounded-xl overflow-hidden cursor-pointer group shadow-sm select-none relative border ${
-                        isCurrent
-                          ? 'bg-white/[0.18] border-white/20'
-                          : 'bg-white/[0.05] hover:bg-white/[0.10] border-white/[0.06]'
-                      }`}
-                    >
-                      <div className="relative w-12 h-12 md:w-16 md:h-16 shrink-0 shadow bg-black/40">
-                        <Image
-                          src={thumb}
-                          alt={track.name}
-                          fill
-                          sizes="64px"
-                          className="object-cover"
-                          priority={idx < 3}
-                          loading={idx < 3 ? undefined : 'lazy'}
-                          decoding="async"
-                        />
-                      </div>
-                      <div className="flex-1 min-w-0 px-3 flex items-center justify-between">
-                        <span className={`text-xs md:text-sm font-bold truncate pr-2 leading-snug ${
-                          isCurrent ? 'text-[#1DB954]' : 'text-white'
-                        }`}>
-                          {track.name}
-                        </span>
-                        <button
-                          onPointerDown={(e) => {
-                            if (e.button === 0) {
-                              e.stopPropagation();
-                              playTrack(track, onlineQuickGridItems, 'similar', idx);
-                            }
-                          }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            playTrack(track, onlineQuickGridItems, 'similar', idx);
-                          }}
-                          style={{ touchAction: 'manipulation' }}
-                          className="w-9 h-9 md:w-11 md:h-11 rounded-full bg-[#1DB954] text-black flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-[0_8px_16px_rgba(29,185,84,0.4)] hover:scale-105 active:scale-95 transition-all duration-200 shrink-0 cursor-pointer"
-                          title="Putar"
-                        >
-                          <Play className="w-4 h-4 md:w-5 md:h-5 fill-current ml-0.5" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
+                {onlineQuickGridItems.map((track, idx) => (
+                  <HomeQuickGridItem
+                    key={`quick-grid-${track.videoId}-${idx}`}
+                    track={track}
+                    idx={idx}
+                    onlineQuickGridItems={onlineQuickGridItems}
+                    isCurrent={currentVideoId === track.videoId}
+                  />
+                ))}
               </div>
             </section>
           )}
@@ -645,7 +1060,11 @@ export default function Home() {
                     </button>
                   </div>
 
-                  <div className="flex overflow-x-auto no-scrollbar gap-4 pb-2 snap-x snap-mandatory scroll-smooth">
+                  <div
+                    onScroll={handleQuickPicksScroll}
+                    onClickCapture={handleQuickPicksClickCapture}
+                    className="flex overflow-x-auto no-scrollbar gap-4 pb-2 snap-x snap-mandatory scroll-smooth"
+                  >
                     {Array.from({ length: Math.ceil(quickPicksTracks.length / 4) }).map((_, i) => {
                       const chunk = quickPicksTracks.slice(i * 4, i * 4 + 4);
                       return (
@@ -653,48 +1072,16 @@ export default function Home() {
                           key={`quickpicks-chunk-${i}`}
                           className="w-[85vw] sm:w-[380px] shrink-0 snap-start flex flex-col gap-1.5"
                         >
-                          {chunk.map((track, j) => {
-                            const thumb = getHighResImage(track.thumbnails?.[track.thumbnails.length - 1]?.url, 100);
-                            const art = Array.isArray(track.artist)
-                              ? track.artist.map((a) => a.name).join(', ')
-                              : track.artist?.name || 'Unknown Artist';
-                            const isCurrent = currentVideoId === track.videoId;
-                            return (
-                              <div
-                                key={`quickpicks-${track.videoId}-${j}`}
-                                className="flex items-center gap-3 cursor-pointer group hover:bg-white/[0.08] active:bg-white/[0.12] p-2 rounded-xl transition-all duration-150 select-none border border-transparent hover:border-white/5"
-                                onPointerDown={(e) => {
-                                  if (e.button === 0) playTrack(track, quickPicksTracks, 'similar');
-                                }}
-                                onClick={() => playTrack(track, quickPicksTracks, 'similar')}
-                                style={{ touchAction: 'manipulation' }}
-                              >
-                                <div className="relative w-12 h-12 rounded-xl overflow-hidden shrink-0 shadow-md bg-white/5 border border-white/5">
-                                  <Image
-                                    src={thumb}
-                                    alt={track.name}
-                                    fill
-                                    sizes="48px"
-                                    priority={i === 0 && j < 3}
-                                    loading={i === 0 && j < 3 ? undefined : 'lazy'}
-                                    decoding="async"
-                                    className="object-cover"
-                                  />
-                                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <Play className="w-4 h-4 fill-white text-white ml-0.5" />
-                                  </div>
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <h4 className={`font-semibold text-sm truncate transition-colors leading-tight ${
-                                    isCurrent ? 'text-[#1DB954]' : 'text-white group-hover:text-[#1DB954]'
-                                  }`}>
-                                    {track.name}
-                                  </h4>
-                                  <p className="text-[#b3b3b3] text-xs truncate mt-0.5">{art}</p>
-                                </div>
-                              </div>
-                            );
-                          })}
+                          {chunk.map((track, j) => (
+                            <HomeQuickPickItem
+                              key={`quickpicks-${track.videoId}-${j}`}
+                              track={track}
+                              quickPicksTracks={quickPicksTracks}
+                              chunkIndex={i}
+                              itemIndex={j}
+                              isCurrent={currentVideoId === track.videoId}
+                            />
+                          ))}
                         </div>
                       );
                     })}
@@ -738,44 +1125,13 @@ export default function Home() {
                     </h2>
                   </div>
                   <div className="flex overflow-x-auto no-scrollbar gap-4 pb-2 snap-x snap-mandatory scroll-smooth">
-                    {artists.map((artist, i) => {
-                      const artistName = artist.name || 'Artist';
-                      const thumb = getHighResImage(artist.thumbnails?.[artist.thumbnails.length - 1]?.url, 400);
-                      return (
-                        <Link
-                          href={`/artist/${artist.artistId}`}
-                          prefetch={true}
-                          onMouseEnter={() => prefetchArtist(artist.artistId)}
-                          onTouchStart={() => prefetchArtist(artist.artistId)}
-                          key={`artist-${artist.artistId}-${i}`}
-                          className="flex-none w-36 md:w-44 p-3 bg-[#181818]/60 hover:bg-[#282828] rounded-md cursor-pointer group snap-start transition-colors duration-200 select-none shadow-sm flex flex-col items-center text-center"
-                        >
-                          <div className="relative w-28 h-28 md:w-36 md:h-36 rounded-full overflow-hidden shadow-xl bg-black/40 mb-3 group-hover:scale-105 transition-transform duration-200">
-                            <Image
-                              src={thumb}
-                              alt={artistName}
-                              fill
-                              sizes="144px"
-                              priority={i < 3}
-                              loading={i < 3 ? undefined : 'lazy'}
-                              decoding="async"
-                              className="object-cover"
-                            />
-                            <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                              <div className="w-10 h-10 rounded-full bg-[#1DB954] text-black flex items-center justify-center shadow-lg">
-                                <Play className="w-5 h-5 fill-current ml-0.5" />
-                              </div>
-                            </div>
-                          </div>
-                          <div className="w-full">
-                            <span className="text-sm font-bold text-white truncate block group-hover:underline">
-                              {artistName}
-                            </span>
-                            <span className="text-xs text-[#b3b3b3] block mt-0.5">Artis</span>
-                          </div>
-                        </Link>
-                      );
-                    })}
+                    {artists.map((artist, i) => (
+                      <PopularArtistCard
+                        key={`artist-${artist.artistId || i}-${i}`}
+                        artist={artist}
+                        index={i}
+                      />
+                    ))}
                   </div>
                 </section>
               )}
@@ -848,92 +1204,16 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="space-y-1">
-                  {filteredOfflineTracks.map((item, index) => {
-                    const track = item.track;
-                    const isCurrent = currentVideoId === track.videoId;
-                    const thumb = getHighResImage(
-                      track.thumbnails?.[track.thumbnails.length - 1]?.url,
-                      120
-                    );
-                    const artistName = Array.isArray(track.artist)
-                      ? track.artist.map((a: any) => a.name).join(', ')
-                      : track.artist?.name || 'Unknown Artist';
-
-                    return (
-                      <div
-                        key={`offline-track-${track.videoId}-${index}`}
-                        onClick={() => {
-                          const allTracks = filteredOfflineTracks.map((t) => t.track);
-                          playTrack(track, allTracks, 'playlist', index);
-                        }}
-                        className={`flex items-center gap-3 md:gap-4 p-2.5 rounded-xl transition-all cursor-pointer group select-none ${
-                          isCurrent
-                            ? 'bg-white/10 text-white shadow-sm'
-                            : 'hover:bg-white/[0.05] text-white/90'
-                        }`}
-                      >
-                        {/* Track Index or Equalizer */}
-                        <div className="w-6 text-center text-xs text-white/40 group-hover:text-white font-mono shrink-0">
-                          {isCurrent && isPlaying ? (
-                            <Equalizer size="sm" />
-                          ) : (
-                            index + 1
-                          )}
-                        </div>
-
-                        {/* Thumbnail with Downloaded Badge */}
-                        <div className="relative w-11 h-11 md:w-12 md:h-12 rounded-lg overflow-hidden shrink-0 shadow bg-white/5">
-                          <Image
-                            src={thumb}
-                            alt={track.name}
-                            fill
-                            sizes="48px"
-                            loading="lazy"
-                            decoding="async"
-                            className="object-cover"
-                          />
-                          <div className="absolute top-0.5 right-0.5 w-3 h-3 rounded-full bg-[#1DB954] flex items-center justify-center shadow">
-                            <CheckCircle2 className="w-2 h-2 text-black stroke-[3]" />
-                          </div>
-                        </div>
-
-                        {/* Track Details */}
-                        <div className="flex-1 min-w-0 pr-2">
-                          <MarqueeText
-                            text={track.name}
-                            className={`text-sm md:text-base font-semibold truncate leading-tight ${
-                              isCurrent ? 'text-[#1DB954]' : 'text-white'
-                            }`}
-                          />
-                          <p className="text-xs text-white/50 truncate mt-0.5">
-                            {artistName}
-                          </p>
-                        </div>
-
-                        {/* Duration & Play Action */}
-                        <div className="flex items-center gap-3 shrink-0">
-                          <span className="text-xs text-white/40 font-mono hidden sm:inline">
-                            {formatDuration(track.duration)}
-                          </span>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const allTracks = filteredOfflineTracks.map((t) => t.track);
-                              playTrack(track, allTracks, 'playlist', index);
-                            }}
-                            className={`w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer ${
-                              isCurrent
-                                ? 'bg-[#1DB954] text-black opacity-100 shadow'
-                                : 'bg-white/10 text-white opacity-0 group-hover:opacity-100 hover:bg-[#1DB954] hover:text-black'
-                            }`}
-                            title="Putar"
-                          >
-                            <Play className="w-3.5 h-3.5 fill-current ml-0.5" />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {filteredOfflineTracks.map((item, index) => (
+                    <HomeOfflineTrackItem
+                      key={`offline-track-${item.track.videoId}-${index}`}
+                      item={item}
+                      index={index}
+                      filteredOfflineTracks={filteredOfflineTracks}
+                      isCurrent={currentVideoId === item.track.videoId}
+                      isPlaying={isPlaying}
+                    />
+                  ))}
                 </div>
               )}
             </>

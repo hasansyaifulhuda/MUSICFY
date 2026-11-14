@@ -25,6 +25,7 @@ interface ScrubberProps {
 function useScrubber(onSeekCommit?: (time: number) => void) {
   const progress = usePlayerStore((state) => state.progress);
   const duration = usePlayerStore((state) => state.duration);
+  const currentTrack = usePlayerStore((state) => state.currentTrack);
   const setProgress = usePlayerStore((state) => state.setProgress);
 
   const [isDragging, setIsDragging] = useState(false);
@@ -48,7 +49,8 @@ function useScrubber(onSeekCommit?: (time: number) => void) {
     };
   }, []);
 
-  const safeDuration = typeof duration === 'number' && !isNaN(duration) && duration > 0 ? duration : 0;
+  const rawDuration = duration > 0 ? duration : (typeof currentTrack?.duration === 'number' ? currentTrack.duration : 0);
+  const safeDuration = typeof rawDuration === 'number' && !isNaN(rawDuration) && rawDuration > 0 ? rawDuration : 0;
   const displayTime = isDragging ? seekTime : progress;
   const percent = safeDuration > 0 ? Math.min(100, Math.max(0, (displayTime / safeDuration) * 100)) : 0;
 
@@ -76,12 +78,12 @@ function useScrubber(onSeekCommit?: (time: number) => void) {
         onSeekCommit(clamped);
       }
 
-      // Lock visual progress to committed timestamp for 1200ms while audio engine range-requests buffer
+      // Lock visual progress to committed timestamp for 1000ms while audio engine buffers
       if (lockTimeoutRef.current) clearTimeout(lockTimeoutRef.current);
       lockTimeoutRef.current = setTimeout(() => {
         isDraggingRef.current = false;
         setIsDragging(false);
-      }, 1200);
+      }, 1000);
     },
     [onSeekCommit, safeDuration, setProgress]
   );
@@ -116,7 +118,8 @@ function useScrubber(onSeekCommit?: (time: number) => void) {
       e.preventDefault();
       e.stopPropagation();
 
-      const targetTime = getTimeFromPointer(e, e.currentTarget);
+      const trackEl = e.currentTarget;
+      const targetTime = getTimeFromPointer(e, trackEl);
       seekTimeRef.current = targetTime;
       setSeekTime(targetTime);
     },
@@ -130,16 +133,23 @@ function useScrubber(onSeekCommit?: (time: number) => void) {
       e.stopPropagation();
 
       const trackEl = e.currentTarget;
+      let targetTime = seekTimeRef.current;
+      if (trackEl && safeDuration > 0) {
+        const computed = getTimeFromPointer(e, trackEl);
+        if (Number.isFinite(computed)) {
+          targetTime = computed;
+        }
+      }
+
       try {
-        if (trackEl.hasPointerCapture(e.pointerId)) {
+        if (trackEl && trackEl.hasPointerCapture(e.pointerId)) {
           trackEl.releasePointerCapture(e.pointerId);
         }
       } catch {}
 
-      const targetTime = getTimeFromPointer(e, trackEl);
       commitSeek(targetTime);
     },
-    [getTimeFromPointer, commitSeek]
+    [getTimeFromPointer, commitSeek, safeDuration]
   );
 
   const handlePointerCancel = useCallback(

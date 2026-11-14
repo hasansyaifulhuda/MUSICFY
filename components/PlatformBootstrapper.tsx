@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import { applyPlatformScaling } from '@/lib/platform';
-import { useEqualizerStore } from '@/lib/audioEffects';
 import { useNetworkStore } from '@/lib/networkMonitor';
 import { useBatteryStore } from '@/lib/batteryStore';
 
@@ -25,7 +24,6 @@ export function PlatformBootstrapper() {
     } catch {}
 
     // Hydrate client preferences safely after mount (0 hydration mismatch)
-    useEqualizerStore.getState().hydrateFromStorage();
     useNetworkStore.getState().initNetworkListeners();
     useBatteryStore.getState().initBatteryListener();
 

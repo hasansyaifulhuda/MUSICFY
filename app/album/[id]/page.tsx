@@ -97,7 +97,7 @@ export default function AlbumPage() {
   }
 
   const coverImage =
-    album.thumbnails?.[album.thumbnails.length - 1]?.url || 'https://picsum.photos/seed/album/800/800';
+    album.thumbnails?.[album.thumbnails.length - 1]?.url || '/icon.png';
   const totalDuration = (album.songs || []).reduce((acc: number, song: any) => acc + (song.duration || 0), 0);
 
   return (

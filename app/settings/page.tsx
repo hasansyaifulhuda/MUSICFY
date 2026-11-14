@@ -1,232 +1,403 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   ArrowLeft,
   Trash2,
-  Database,
-  HardDrive,
   RefreshCw,
-  Smartphone,
-  ShieldCheck,
-  AlertTriangle,
+  Database,
   SlidersHorizontal,
-  Moon,
-  Download,
-  Upload,
-  Radio,
-  Volume2,
-  Sparkles,
-  Battery,
-  BatteryCharging,
-  Activity,
-  Wrench,
-  CheckCircle2,
-  AlertCircle,
-  Terminal,
+  DownloadCloud,
+  History,
+  AlertTriangle,
+  X,
+  ShieldAlert,
 } from 'lucide-react';
 import { usePlayerStore } from '@/lib/store';
 import { db } from '@/lib/db';
 import { toast } from '@/lib/toast';
-import { useEqualizerStore } from '@/lib/audioEffects';
-import { useSleepTimerStore, formatRemainingTimer } from '@/lib/sleepTimerStore';
-import { useFloatingWidgetStore } from '@/lib/floatingWidgetStore';
-import { useFloatingLyricsStore } from '@/lib/floatingLyricsStore';
-import { useCrossfadeStore } from '@/lib/crossfadeStore';
-import { useAudioQualityStore, AUDIO_QUALITY_OPTIONS, AudioQuality } from '@/lib/audioQualityStore';
-import { exportUserDataToJson, importUserDataFromJson } from '@/lib/backupRestore';
-import { useBatteryStore } from '@/lib/batteryStore';
-import { runSelfDiagnosis, repairSystemState, DiagnosticReport } from '@/lib/selfDiagnosis';
-import { useDevModalStore } from '@/lib/devModalStore';
 import { cn } from '@/lib/utils';
-import Link from 'next/link';
-import { useEffect } from 'react';
+
+type ActionId = 'cache' | 'storage' | 'idb' | 'downloads' | 'history' | 'all';
+
+interface ActionConfig {
+  id: ActionId;
+  order: number;
+  title: string;
+  badge: string;
+  description: string;
+  buttonLabel: string;
+  isDestructive: boolean;
+  requiresTwoStep?: boolean;
+  icon: React.ComponentType<{ className?: string }>;
+  details: string[];
+}
+
+const SETTINGS_ACTIONS: ActionConfig[] = [
+  {
+    id: 'cache',
+    order: 1,
+    title: 'Clear Cache',
+    badge: 'Cache Storage',
+    description:
+      'Bersihkan cache browser dan Cache Storage aplikasi (thumbnail gambar, respon audio sementara, dan cache jaringan).',
+    buttonLabel: 'Bersihkan Cache',
+    isDestructive: false,
+    icon: RefreshCw,
+    details: [
+      'Menghapus seluruh cache HTTP dan Cache Storage browser.',
+      'Menghapus thumbnail sementara yang disimpan di cache perangkat.',
+      'Aplikasi akan memuat ulang aset terbaru langsung dari server.',
+      'Data playlist, lagu favorit, unduhan, dan preferensi TIDAK akan terhapus.',
+    ],
+  },
+  {
+    id: 'storage',
+    order: 2,
+    title: 'Clear LocalStorage',
+    badge: 'Preferensi Lokal',
+    description:
+      'Reset seluruh preferensi pengguna, pengaturan volume, mode acak/repeat, dan sesi pemutar ke setelan default pabrik.',
+    buttonLabel: 'Reset LocalStorage',
+    isDestructive: false,
+    icon: SlidersHorizontal,
+    details: [
+      'Mereset preferensi pemutar (volume, shuffle, repeat, crossfade).',
+      'Mereset preferensi audio dan pemutar ke setelan default.',
+      'Menghapus sesi audio sementara yang tersimpan di browser.',
+      'Lagu offline dan playlist yang tersimpan di IndexedDB TIDAK akan terhapus.',
+    ],
+  },
+  {
+    id: 'idb',
+    order: 3,
+    title: 'Clear IndexedDB',
+    badge: 'Basis Data Lokal',
+    description:
+      'Kosongkan seluruh basis data IndexedDB lokal (seluruh lagu unduhan offline, daftar putar kustom, lagu disukai, artis langganan, dan album tersimpan).',
+    buttonLabel: 'Kosongkan IndexedDB',
+    isDestructive: true,
+    icon: Database,
+    details: [
+      'Mengosongkan seluruh tabel data pada database IndexedDB (SannMusicDB).',
+      'Menghapus seluruh file lagu unduhan offline dari penyimpanan perangkat.',
+      'Menghapus seluruh daftar putar (playlists) kustom yang dibuat lokal.',
+      'Menghapus daftar lagu yang disukai (liked songs) dan album tersimpan.',
+      'Pengaturan volume dan preferensi LocalStorage TIDAK akan terhapus.',
+    ],
+  },
+  {
+    id: 'downloads',
+    order: 4,
+    title: 'Clear Offline Downloads',
+    badge: 'File Audio Offline',
+    description:
+      'Hapus seluruh file audio musik yang diunduh untuk pemutaran offline guna membebaskan ruang penyimpanan perangkat. Metadata playlist dan lagu favorit tetap aman.',
+    buttonLabel: 'Hapus Unduhan',
+    isDestructive: true,
+    icon: DownloadCloud,
+    details: [
+      'Menghapus seluruh file audio (MP3/Blob) yang diunduh untuk mode offline.',
+      'Membebaskan ruang penyimpanan memori perangkat Anda.',
+      'Daftar putar, riwayat, dan lagu favorit Anda TETAP UTUH dan aman.',
+      'Pengaturan dan cache aplikasi lainnya TIDAK akan terhapus.',
+    ],
+  },
+  {
+    id: 'history',
+    order: 5,
+    title: 'Clear Song History',
+    badge: 'Riwayat Putar',
+    description:
+      'Bersihkan seluruh riwayat pemutaran lagu yang pernah Anda dengarkan dan reset statistik jumlah putar (play counts).',
+    buttonLabel: 'Hapus Riwayat',
+    isDestructive: false,
+    icon: History,
+    details: [
+      'Mengosongkan seluruh daftar riwayat pemutaran lagu.',
+      'Mereset penghitung frekuensi putar (play counts) untuk tangga lagu Top 50.',
+      'Menghapus riwayat pencarian terbaru (recent searches).',
+      'Lagu offline, playlist, dan favorit Anda TIDAK akan terhapus.',
+    ],
+  },
+  {
+    id: 'all',
+    order: 6,
+    title: 'Clear All App/Web Data',
+    badge: 'Pembersihan Total',
+    description:
+      'Pembersihan menyeluruh dan reset total. Hapus Cache Storage, LocalStorage, IndexedDB, riwayat, unduhan offline, dan sesi aktif sekaligus (kondisi instalasi awal).',
+    buttonLabel: 'Hapus Seluruh Data',
+    isDestructive: true,
+    requiresTwoStep: true,
+    icon: AlertTriangle,
+    details: [
+      'Menghapus SELURUH lagu yang diunduh untuk pemutaran offline.',
+      'Menghapus SELURUH playlist lokal, lagu favorit, riwayat putar, dan album.',
+      'Mereset SELURUH pengaturan pemutar dan preferensi ke setelan awal pabrik.',
+      'Membersihkan seluruh cache browser dan Cache Storage aplikasi.',
+      'Mengembalikan aplikasi ke kondisi bersih seperti pertama kali dibuka.',
+    ],
+  },
+];
 
 export default function SettingsPage() {
   const router = useRouter();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const clearHistory = usePlayerStore((state) => state.clearHistory);
-  const [clearing, setClearing] = useState<string | null>(null);
-  const [isExporting, setIsExporting] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
-  const openDevModal = useDevModalStore((state) => state.openModal);
+  // Active confirmation modal state
+  const [activeAction, setActiveAction] = useState<ActionConfig | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [stepTwoConfirm, setStepTwoConfirm] = useState(false);
 
-  const openEqualizerModal = useEqualizerStore((state) => state.openModal);
-  const isEqualizerEnabled = useEqualizerStore((state) => state.isEnabled);
-  const activePreset = useEqualizerStore((state) => state.activePreset);
+  // Close modal helper
+  const closeModal = useCallback(() => {
+    if (isProcessing) return;
+    setActiveAction(null);
+    setStepTwoConfirm(false);
+  }, [isProcessing]);
 
-  const openSleepTimerModal = useSleepTimerStore((state) => state.openModal);
-  const isSleepTimerActive = useSleepTimerStore((state) => state.isActive);
-  const remainingSeconds = useSleepTimerStore((state) => state.remainingSeconds);
-
-  const isFloatingEnabled = useFloatingWidgetStore((state) => state.isEnabled);
-  const toggleFloatingEnabled = useFloatingWidgetStore((state) => state.toggleEnabled);
-
-  const isFloatingLyricsEnabled = useFloatingLyricsStore((state) => state.isEnabled);
-  const toggleFloatingLyrics = useFloatingLyricsStore((state) => state.toggleEnabled);
-
-  const crossfadeDuration = useCrossfadeStore((state) => state.crossfadeDuration);
-  const setCrossfadeDuration = useCrossfadeStore((state) => state.setCrossfadeDuration);
-
-  const audioQuality = useAudioQualityStore((state) => state.quality);
-  const setAudioQuality = useAudioQualityStore((state) => state.setQuality);
-
-  // Battery Saver (Poin 74)
-  const batteryLevel = useBatteryStore((state) => state.batteryLevel);
-  const isCharging = useBatteryStore((state) => state.isCharging);
-  const isLowPowerActive = useBatteryStore((state) => state.isLowPowerActive);
-  const isAutoLowPower = useBatteryStore((state) => state.isAutoLowPower);
-  const toggleManualSaver = useBatteryStore((state) => state.toggleManualSaver);
-  const initBatteryListener = useBatteryStore((state) => state.initBatteryListener);
-
+  // Handle Escape key to close modal
   useEffect(() => {
-    initBatteryListener();
-  }, [initBatteryListener]);
-
-  // Self-Diagnosis & Crash Telemetry (Poin 76)
-  const [isRunningDiag, setIsRunningDiag] = useState(false);
-  const [diagReport, setDiagReport] = useState<DiagnosticReport | null>(null);
-  const [isRepairing, setIsRepairing] = useState(false);
-
-  const handleRunDiagnosis = async () => {
-    setIsRunningDiag(true);
-    try {
-      const report = await runSelfDiagnosis();
-      setDiagReport(report);
-      if (report.overallStatus === 'healthy') {
-        toast.success('Pemeriksaan selesai: Seluruh komponen sistem sehat!');
-      } else if (report.overallStatus === 'warning') {
-        toast.info('Pemeriksaan selesai: Ditemukan beberapa peringatan ringan.');
-      } else {
-        toast.error('Pemeriksaan selesai: Ditemukan masalah integritas.');
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && activeAction && !isProcessing) {
+        closeModal();
       }
-    } finally {
-      setIsRunningDiag(false);
-    }
-  };
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeAction, isProcessing, closeModal]);
 
-  const handleRepairState = async () => {
-    setIsRepairing(true);
-    try {
-      await repairSystemState();
-      const fresh = await runSelfDiagnosis();
-      setDiagReport(fresh);
-    } finally {
-      setIsRepairing(false);
-    }
-  };
-
-  // Backup & Restore Handlers
-  const handleExportBackup = async () => {
-    try {
-      setIsExporting(true);
-      await exportUserDataToJson();
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  const handleTriggerImport = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!confirm(`Pulihkan data dari file "${file.name}"? Data playlist, lagu favorit, dan riwayat akan digabungkan.`)) {
-      e.target.value = '';
-      return;
-    }
-
-    try {
-      setIsImporting(true);
-      const res = await importUserDataFromJson(file);
-      if (res.success) {
-        // Trigger page re-sync
-        setTimeout(() => {
-          router.refresh();
-        }, 500);
-      }
-    } finally {
-      setIsImporting(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
-  };
-
-  // 1. Clear Song & Playback History
-  const handleClearHistory = () => {
-    if (confirm('Apakah Anda yakin ingin menghapus semua riwayat pemutaran lagu?')) {
-      clearHistory();
-    }
-  };
-
-  // 2. Clear IndexedDB Offline Tracks
-  const handleClearIndexedDB = async () => {
-    if (confirm('Hapus semua unduhan lagu offline dari penyimpanan perangkat?')) {
-      try {
-        setClearing('idb');
-        await db.clearOfflineTracks();
-        toast.success('Semua unduhan lagu offline berhasil dibersihkan');
-      } catch (err) {
-        console.error('Error clearing IndexedDB:', err);
-        toast.error('Gagal membersihkan data IndexedDB');
-      } finally {
-        setClearing(null);
-      }
-    }
-  };
-
-  // 3. Clear Service Worker & Browser Caches
+  // 1. Clear Cache
   const handleClearCache = async () => {
-    if (confirm('Bersihkan cache browser dan Service Worker? Aplikasi akan memuat versi terbaru.')) {
-      try {
-        setClearing('cache');
-        if ('caches' in window) {
-          const cacheKeys = await caches.keys();
-          await Promise.all(cacheKeys.map((key) => caches.delete(key)));
-        }
-        toast.success('Cache aplikasi dan Service Worker berhasil dibersihkan');
-      } catch (err) {
-        console.error('Error clearing cache:', err);
-        toast.error('Gagal membersihkan cache browser');
-      } finally {
-        setClearing(null);
+    setIsProcessing(true);
+    try {
+      if (typeof window !== 'undefined' && 'caches' in window) {
+        const keys = await Promise.race([
+          caches.keys(),
+          new Promise<string[]>((_, reject) =>
+            setTimeout(() => reject(new Error('Cache keys timeout')), 4000)
+          ),
+        ]);
+        await Promise.all(keys.map((k) => caches.delete(k)));
       }
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        sessionStorage.clear();
+      }
+      toast.success('Cache aplikasi dan aset sementara berhasil dibersihkan.');
+    } catch (err: any) {
+      console.error('[Settings] Error clearing cache:', err);
+      toast.error('Gagal membersihkan cache: ' + (err?.message || 'Terjadi kesalahan sistem'));
+    } finally {
+      setIsProcessing(false);
+      closeModal();
     }
   };
 
-  // 4. Reset LocalStorage Data
-  const handleClearLocalStorage = () => {
-    if (
-      confirm(
-        'Peringatan: Ini akan mereset pengaturan volume, preferensi acak/repeat, dan cache lokal ke default. Lanjutkan?'
-      )
-    ) {
-      try {
-        setClearing('storage');
+  // 2. Clear LocalStorage
+  const handleClearLocalStorage = async () => {
+    setIsProcessing(true);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
         localStorage.clear();
-        toast.success('Data preferensi dan LocalStorage berhasil direset');
-        setTimeout(() => {
-          window.location.reload();
-        }, 800);
-      } catch (err) {
-        console.error('Error clearing localStorage:', err);
-        toast.error('Gagal mereset LocalStorage');
-      } finally {
-        setClearing(null);
       }
+      toast.success('Data preferensi dan LocalStorage berhasil dibersihkan.');
+    } catch (err: any) {
+      console.error('[Settings] Error clearing localStorage:', err);
+      toast.error('Gagal membersihkan LocalStorage: ' + (err?.message || 'Terjadi kesalahan'));
+    } finally {
+      setIsProcessing(false);
+      closeModal();
+    }
+  };
+
+  // 3. Clear IndexedDB
+  const handleClearIndexedDB = async () => {
+    setIsProcessing(true);
+    try {
+      // Safety check: pause audio if currently playing offline track
+      const currentTrack = usePlayerStore.getState().currentTrack;
+      if (currentTrack?.videoId) {
+        const isOffline = db.isOfflineTrackSync(currentTrack.videoId);
+        if (isOffline) {
+          usePlayerStore.getState().setPlaying(false);
+          const audio = typeof window !== 'undefined' ? (document.getElementById('musicfy-persistent-audio') as HTMLAudioElement) : null;
+          audio?.pause();
+        }
+      }
+
+      const success = await Promise.race([
+        db.clearAllIndexedDB(),
+        new Promise<boolean>((_, reject) =>
+          setTimeout(() => reject(new Error('IndexedDB clear timeout')), 5000)
+        ),
+      ]);
+
+      if (!success) {
+        throw new Error('Gagal mengosongkan store IndexedDB');
+      }
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('musicfy:offline-updated', { detail: { action: 'clear' } })
+        );
+        window.dispatchEvent(new Event('musicfy:library-updated'));
+      }
+
+      toast.success('Seluruh data IndexedDB berhasil dikosongkan.');
+    } catch (err: any) {
+      console.error('[Settings] Error clearing IndexedDB:', err);
+      toast.error('Gagal mengosongkan IndexedDB: ' + (err?.message || 'Terjadi galat basis data'));
+    } finally {
+      setIsProcessing(false);
+      closeModal();
+    }
+  };
+
+  // 4. Clear Offline Downloads
+  const handleClearOfflineDownloads = async () => {
+    setIsProcessing(true);
+    try {
+      // Safety check: pause audio if currently playing offline track
+      const currentTrack = usePlayerStore.getState().currentTrack;
+      if (currentTrack?.videoId) {
+        const isOffline = db.isOfflineTrackSync(currentTrack.videoId);
+        if (isOffline) {
+          usePlayerStore.getState().setPlaying(false);
+          const audio = typeof window !== 'undefined' ? (document.getElementById('musicfy-persistent-audio') as HTMLAudioElement) : null;
+          audio?.pause();
+        }
+      }
+
+      const success = await Promise.race([
+        db.clearOfflineTracks(),
+        new Promise<boolean>((_, reject) =>
+          setTimeout(() => reject(new Error('Clear downloads timeout')), 5000)
+        ),
+      ]);
+
+      if (!success) {
+        throw new Error('Gagal menghapus file unduhan offline');
+      }
+
+      toast.success('Semua unduhan lagu offline berhasil dihapus.');
+    } catch (err: any) {
+      console.error('[Settings] Error clearing offline downloads:', err);
+      toast.error('Gagal menghapus unduhan: ' + (err?.message || 'Terjadi kesalahan sistem'));
+    } finally {
+      setIsProcessing(false);
+      closeModal();
+    }
+  };
+
+  // 5. Clear Song History
+  const handleClearSongHistory = async () => {
+    setIsProcessing(true);
+    try {
+      usePlayerStore.getState().clearHistory();
+      await db.clearRecentSearches().catch(() => {});
+      toast.success('Riwayat pemutaran lagu berhasil dibersihkan.');
+    } catch (err: any) {
+      console.error('[Settings] Error clearing history:', err);
+      toast.error('Gagal membersihkan riwayat: ' + (err?.message || 'Terjadi kesalahan'));
+    } finally {
+      setIsProcessing(false);
+      closeModal();
+    }
+  };
+
+  // 6. Clear All App/Web Data
+  const handleClearAllData = async () => {
+    setIsProcessing(true);
+    try {
+      // 1. Pause audio immediately
+      usePlayerStore.getState().setPlaying(false);
+      const audio = typeof window !== 'undefined' ? (document.getElementById('musicfy-persistent-audio') as HTMLAudioElement) : null;
+      audio?.pause();
+
+      // 2. Clear IndexedDB stores safely
+      try {
+        await Promise.race([
+          db.clearAllIndexedDB(),
+          new Promise<boolean>((_, reject) =>
+            setTimeout(() => reject(new Error('IndexedDB clear timeout')), 5000)
+          ),
+        ]);
+      } catch (e) {
+        console.warn('[Settings] IndexedDB clear warning:', e);
+      }
+
+      // 3. Close database connection cleanly
+      try {
+        db.closeDatabase();
+      } catch {}
+
+      // 4. Clear Cache Storage
+      if (typeof window !== 'undefined' && 'caches' in window) {
+        try {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((k) => caches.delete(k)));
+        } catch (e) {
+          console.warn('[Settings] Cache storage clear warning:', e);
+        }
+      }
+
+      // 5. Clear LocalStorage & SessionStorage
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.clear();
+          sessionStorage.clear();
+        } catch {}
+      }
+
+      // 6. Reset in-memory player state
+      try {
+        usePlayerStore.getState().clearHistory();
+      } catch {}
+
+      toast.success('Seluruh data aplikasi berhasil dibersihkan. Memuat ulang aplikasi...');
+
+      // 7. Clean redirect to home
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 700);
+    } catch (err: any) {
+      console.error('[Settings] Error clearing all data:', err);
+      toast.error('Gagal membersihkan seluruh data: ' + (err?.message || 'Terjadi kesalahan'));
+      setIsProcessing(false);
+      closeModal();
+    }
+  };
+
+  // Route action execution by ID
+  const executeAction = async () => {
+    if (!activeAction) return;
+    switch (activeAction.id) {
+      case 'cache':
+        await handleClearCache();
+        break;
+      case 'storage':
+        await handleClearLocalStorage();
+        break;
+      case 'idb':
+        await handleClearIndexedDB();
+        break;
+      case 'downloads':
+        await handleClearOfflineDownloads();
+        break;
+      case 'history':
+        await handleClearSongHistory();
+        break;
+      case 'all':
+        await handleClearAllData();
+        break;
     }
   };
 
   return (
-    <main className="min-h-screen pb-28 select-none">
+    <main className="min-h-screen pb-32 select-none bg-black text-white">
       {/* Sticky Header */}
-      <div className="sticky top-0 z-20 bg-black/60 backdrop-blur-md pt-5 pb-4 px-4 md:px-8 border-b border-white/5 flex items-center justify-between">
+      <div className="sticky top-0 z-20 bg-black/70 backdrop-blur-md pt-5 pb-4 px-4 md:px-8 border-b border-white/5 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <button
             onClick={() => router.back()}
@@ -235,601 +406,242 @@ export default function SettingsPage() {
           >
             <ArrowLeft className="w-6 h-6" />
           </button>
-          <h1 className="text-xl md:text-2xl font-extrabold text-white tracking-tight">Pengaturan</h1>
+          <div>
+            <h1 className="text-xl md:text-2xl font-extrabold text-white tracking-tight">
+              Pengaturan
+            </h1>
+            <p className="text-xs text-white/50">Manajemen Data &amp; Penyimpanan Aplikasi</p>
+          </div>
         </div>
       </div>
 
-      <div className="p-4 md:p-8 max-w-3xl mx-auto space-y-8">
-        {/* SECTION 1: DATA & STORAGE MANAGEMENT */}
-        <section className="space-y-4">
-          <div className="flex items-center gap-2 px-1">
-            <Database className="w-5 h-5 text-[#1DB954]" />
-            <h2 className="text-sm font-bold uppercase tracking-wider text-[#b3b3b3]">
-              Manajemen Penyimpanan & Data
-            </h2>
-          </div>
+      {/* Main Container */}
+      <div className="p-4 md:p-8 max-w-3xl mx-auto">
+        {/* The 6 Actions List */}
+        <div className="bg-[#121212] border border-white/[0.06] rounded-2xl divide-y divide-white/[0.05] overflow-hidden shadow-xl">
+          {SETTINGS_ACTIONS.map((action) => {
+            const Icon = action.icon;
+            const isAll = action.id === 'all';
 
-          <div className="bg-[#181818] border border-white/5 rounded-2xl divide-y divide-white/5 overflow-hidden shadow-lg">
-            {/* 1. Clear History */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <h3 className="text-sm md:text-base font-bold text-white mb-0.5">Bersihkan Riwayat Putar</h3>
-                <p className="text-xs text-[#b3b3b3]">Hapus seluruh daftar lagu yang pernah Anda dengarkan.</p>
-              </div>
-              <button
-                onClick={handleClearHistory}
-                className="flex items-center gap-1.5 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-semibold transition-colors cursor-pointer shrink-0"
+            return (
+              <div
+                key={action.id}
+                className={cn(
+                  'p-4 md:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-colors',
+                  isAll
+                    ? 'hover:bg-red-500/[0.03] bg-red-950/[0.08]'
+                    : 'hover:bg-white/[0.03]'
+                )}
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Hapus Riwayat</span>
-              </button>
-            </div>
-
-            {/* 2. Clear IndexedDB Offline Tracks */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <h3 className="text-sm md:text-base font-bold text-white mb-0.5">
-                  Kosongkan Unduhan Offline (IndexedDB)
-                </h3>
-                <p className="text-xs text-[#b3b3b3]">
-                  Hapus semua file lagu yang disimpan untuk mode offline guna menghemat ruang penyimpanan.
-                </p>
-              </div>
-              <button
-                onClick={handleClearIndexedDB}
-                disabled={clearing === 'idb'}
-                className="flex items-center gap-1.5 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-semibold transition-colors cursor-pointer shrink-0 disabled:opacity-50"
-              >
-                <HardDrive className="w-3.5 h-3.5" />
-                <span>{clearing === 'idb' ? 'Menghapus...' : 'Hapus Unduhan'}</span>
-              </button>
-            </div>
-
-            {/* 3. Clear Service Worker & Browser Cache */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <h3 className="text-sm md:text-base font-bold text-white mb-0.5">
-                  Bersihkan Cache Service Worker
-                </h3>
-                <p className="text-xs text-[#b3b3b3]">
-                  Hapus cache thumbnail dan aset sementara untuk menyegarkan aplikasi ke versi terbaru.
-                </p>
-              </div>
-              <button
-                onClick={handleClearCache}
-                disabled={clearing === 'cache'}
-                className="flex items-center gap-1.5 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-semibold transition-colors cursor-pointer shrink-0 disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${clearing === 'cache' ? 'animate-spin' : ''}`} />
-                <span>{clearing === 'cache' ? 'Membersihkan...' : 'Hapus Cache'}</span>
-              </button>
-            </div>
-
-            {/* 4. Reset LocalStorage */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <h3 className="text-sm md:text-base font-bold text-red-400 mb-0.5 flex items-center gap-1.5">
-                  <AlertTriangle className="w-4 h-4 text-red-400" />
-                  <span>Reset LocalStorage & Preferensi</span>
-                </h3>
-                <p className="text-xs text-[#b3b3b3]">
-                  Kembalikan semua preferensi pemutar ke pengaturan pabrik dan reload aplikasi.
-                </p>
-              </div>
-              <button
-                onClick={handleClearLocalStorage}
-                disabled={clearing === 'storage'}
-                className="flex items-center gap-1.5 px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-full text-xs font-semibold transition-colors cursor-pointer shrink-0 disabled:opacity-50 border border-red-500/30"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>{clearing === 'storage' ? 'Mereset...' : 'Reset Data'}</span>
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* SECTION 2: CADANGKAN & PULIHKAN DATA (BATCH 2 - POIN 28) */}
-        <section className="space-y-4">
-          <div className="flex items-center gap-2 px-1">
-            <Download className="w-5 h-5 text-[#1DB954]" />
-            <h2 className="text-sm font-bold uppercase tracking-wider text-[#b3b3b3]">
-              Cadangkan & Pulihkan Data (JSON)
-            </h2>
-          </div>
-
-          {/* Hidden File Input for Backup Restore */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json,application/json"
-            className="hidden"
-            onChange={handleFileChange}
-          />
-
-          <div className="bg-[#181818] border border-white/5 rounded-2xl divide-y divide-white/5 overflow-hidden shadow-lg">
-            {/* Export Backup */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <h3 className="text-sm md:text-base font-bold text-white">Ekspor Cadangan Data (.json)</h3>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#1DB954]/20 text-[#1DB954]">
-                    Batch 2
-                  </span>
-                </div>
-                <p className="text-xs text-[#b3b3b3]">
-                  Unduh seluruh daftar playlist lokal, lagu favorit, riwayat putar, dan preferensi equalizer ke dalam file .json.
-                </p>
-              </div>
-              <button
-                onClick={handleExportBackup}
-                disabled={isExporting}
-                className="flex items-center gap-1.5 px-4 py-2 bg-[#1DB954] hover:bg-[#1ed760] text-black rounded-full text-xs font-bold transition-all cursor-pointer shrink-0 shadow-md shadow-[#1DB954]/20 disabled:opacity-50"
-              >
-                <Download className={`w-3.5 h-3.5 ${isExporting ? 'animate-bounce' : ''}`} />
-                <span>{isExporting ? 'Mengekspor...' : 'Unduh Cadangan'}</span>
-              </button>
-            </div>
-
-            {/* Import Backup */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <h3 className="text-sm md:text-base font-bold text-white mb-0.5">
-                  Pulihkan Cadangan Data (.json)
-                </h3>
-                <p className="text-xs text-[#b3b3b3]">
-                  Pulihkan playlist, riwayat, dan lagu favorit Anda dari file cadangan JSON tanpa menghapus data yang sudah ada.
-                </p>
-              </div>
-              <button
-                onClick={handleTriggerImport}
-                disabled={isImporting}
-                className="flex items-center gap-1.5 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-semibold transition-colors cursor-pointer shrink-0 disabled:opacity-50"
-              >
-                <Upload className={`w-3.5 h-3.5 ${isImporting ? 'animate-pulse' : ''}`} />
-                <span>{isImporting ? 'Memulihkan...' : 'Pilih File JSON'}</span>
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* SECTION 3: KUALITAS AUDIO & HEMAT DATA (BATCH 2 - POIN 30) */}
-        <section className="space-y-4">
-          <div className="flex items-center gap-2 px-1">
-            <Radio className="w-5 h-5 text-[#1DB954]" />
-            <h2 className="text-sm font-bold uppercase tracking-wider text-[#b3b3b3]">
-              Kualitas Audio & Penghemat Data (Data Saver)
-            </h2>
-          </div>
-
-          <div className="bg-[#181818] border border-white/5 rounded-2xl p-4 md:p-5 shadow-lg space-y-4">
-            <div>
-              <h3 className="text-sm md:text-base font-bold text-white mb-0.5">Tingkat Kualitas Streaming</h3>
-              <p className="text-xs text-[#b3b3b3]">
-                Pilih opsi penghematan kuota seluler atau nikmati fidelitas audio maksimum.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-              {AUDIO_QUALITY_OPTIONS.map((opt) => {
-                const isSelected = audioQuality === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    onClick={() => setAudioQuality(opt.id)}
+                <div className="flex items-start gap-3.5 flex-1 min-w-0">
+                  <div
                     className={cn(
-                      'p-3.5 rounded-xl border transition-all cursor-pointer text-left flex flex-col justify-between gap-2',
-                      isSelected
-                        ? 'bg-white/10 border-[#1DB954] shadow-md ring-1 ring-[#1DB954]/50'
-                        : 'bg-white/5 border-transparent hover:bg-white/10'
+                      'p-2.5 rounded-xl shrink-0 mt-0.5',
+                      action.isDestructive
+                        ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                        : 'bg-white/10 text-white border border-white/10'
                     )}
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div
-                          className={cn(
-                            'w-4 h-4 rounded-full border flex items-center justify-center transition-colors',
-                            isSelected ? 'border-[#1DB954] bg-[#1DB954]' : 'border-white/40'
-                          )}
-                        >
-                          {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-black" />}
-                        </div>
-                        <span className="text-sm font-bold text-white">{opt.name}</span>
-                      </div>
-                      {opt.id === 'low' && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                          Hemat Kuota &gt; 50%
-                        </span>
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-xs text-white/80 font-medium">{opt.bitrateDesc}</p>
-                      <p className="text-[11px] text-[#b3b3b3] mt-0.5">{opt.dataUsageDesc}</p>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </section>
-
-        {/* SECTION 4: AUDIO & PLAYBACK FEATURES (BATCH 2) */}
-        <section className="space-y-4">
-          <div className="flex items-center gap-2 px-1">
-            <SlidersHorizontal className="w-5 h-5 text-[#1DB954]" />
-            <h2 className="text-sm font-bold uppercase tracking-wider text-[#b3b3b3]">
-              Fitur Pemutar & Efek Audio
-            </h2>
-          </div>
-
-          <div className="bg-[#181818] border border-white/5 rounded-2xl divide-y divide-white/5 overflow-hidden shadow-lg">
-            {/* Crossfade Antar Lagu (Poin 29) */}
-            <div className="p-4 md:p-5 space-y-3">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex-1 min-w-0 pr-2">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <h3 className="text-sm md:text-base font-bold text-white">Crossfade Antar Lagu</h3>
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#1DB954]/20 text-[#1DB954]">
-                      {crossfadeDuration === 0 ? 'Nonaktif' : `${crossfadeDuration} detik`}
-                    </span>
+                    <Icon className="w-5 h-5" />
                   </div>
-                  <p className="text-xs text-[#b3b3b3]">
-                    Efek transisi pudar halus (fade-out &amp; fade-in) saat berganti trek lagu untuk menghilangkan jeda hening.
-                  </p>
+                  <div className="min-w-0 pr-2">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <h2
+                        className={cn(
+                          'text-sm md:text-base font-bold tracking-tight',
+                          action.isDestructive ? 'text-red-400' : 'text-white'
+                        )}
+                      >
+                        {action.title}
+                      </h2>
+                      <span
+                        className={cn(
+                          'text-[10px] font-bold px-2 py-0.5 rounded-full',
+                          action.isDestructive
+                            ? 'bg-red-500/15 text-red-400 border border-red-500/25'
+                            : 'bg-white/10 text-white/70'
+                        )}
+                      >
+                        {action.badge}
+                      </span>
+                    </div>
+                    <p className="text-xs text-white/60 leading-relaxed">{action.description}</p>
+                  </div>
+                </div>
+
+                <div className="sm:self-center shrink-0 pl-12 sm:pl-0">
+                  <button
+                    onClick={() => {
+                      setActiveAction(action);
+                      setStepTwoConfirm(false);
+                    }}
+                    className={cn(
+                      'w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm active:scale-95',
+                      action.isDestructive
+                        ? 'bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 hover:border-red-500/50'
+                        : 'bg-white/10 hover:bg-white/20 text-white border border-white/10 hover:border-white/20'
+                    )}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>{action.buttonLabel}</span>
+                  </button>
                 </div>
               </div>
+            );
+          })}
+        </div>
+      </div>
 
-              {/* Crossfade Selector Buttons */}
-              <div className="flex items-center gap-2 pt-1 flex-wrap">
-                {[0, 2, 4, 6, 8, 12].map((sec) => {
-                  const isActive = crossfadeDuration === sec;
-                  return (
-                    <button
-                      key={sec}
-                      onClick={() => setCrossfadeDuration(sec)}
+      {/* Confirmation Modal */}
+      {activeAction && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 transition-all duration-200"
+          onClick={closeModal}
+        >
+          <div
+            className={cn(
+              'bg-[#181818] border rounded-2xl p-5 md:p-6 max-w-md w-full shadow-2xl relative transition-all duration-200',
+              activeAction.isDestructive ? 'border-red-500/30' : 'border-white/10'
+            )}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Close Button */}
+            <button
+              onClick={closeModal}
+              disabled={isProcessing}
+              className="absolute top-4 right-4 p-1.5 text-white/40 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer disabled:opacity-50"
+              aria-label="Tutup dialog"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Header */}
+            <div className="flex items-start gap-3.5 mb-4">
+              <div
+                className={cn(
+                  'p-3 rounded-2xl shrink-0',
+                  activeAction.isDestructive
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                    : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                )}
+              >
+                {activeAction.isDestructive ? (
+                  <AlertTriangle className="w-6 h-6" />
+                ) : (
+                  <ShieldAlert className="w-6 h-6" />
+                )}
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                  <h3 className="text-base md:text-lg font-bold text-white tracking-tight">
+                    {stepTwoConfirm ? 'Konfirmasi Akhir (Permanen)' : `Konfirmasi: ${activeAction.title}`}
+                  </h3>
+                  {activeAction.requiresTwoStep && (
+                    <span
                       className={cn(
-                        'px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer border',
-                        isActive
-                          ? 'bg-[#1DB954] text-black border-[#1DB954] font-bold shadow-md shadow-[#1DB954]/20'
-                          : 'bg-white/5 text-white/80 border-white/10 hover:bg-white/10 hover:text-white'
+                        'text-[10px] font-bold px-2 py-0.5 rounded-full border',
+                        stepTwoConfirm
+                          ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                          : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                       )}
                     >
-                      {sec === 0 ? 'Mati' : `${sec} dtk`}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Equalizer */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <h3 className="text-sm md:text-base font-bold text-white">Equalizer Suara (Web Audio API)</h3>
-                  {isEqualizerEnabled ? (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#1DB954]/20 text-[#1DB954]">
-                      Aktif ({activePreset})
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/10 text-white/50">
-                      Nonaktif
+                      {stepTwoConfirm ? 'Tahap 2 / 2: Peringatan Kritis' : 'Tahap 1 / 2: Konfirmasi Awal'}
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-[#b3b3b3]">
-                  Kustomisasi frekuensi bass, mid, treble, dan bass boost untuk kualitas suara optimal.
+                <p className="text-xs text-white/50 mt-0.5">
+                  {stepTwoConfirm
+                    ? 'Peringatan: Tindakan ini tidak dapat dibatalkan.'
+                    : 'Periksa dampak penghapusan data di bawah ini:'}
                 </p>
               </div>
-              <button
-                onClick={openEqualizerModal}
-                className="flex items-center gap-1.5 px-4 py-2 bg-[#1DB954] hover:bg-[#1ed760] text-black rounded-full text-xs font-bold transition-all cursor-pointer shrink-0 shadow-md shadow-[#1DB954]/20"
-              >
-                <SlidersHorizontal className="w-3.5 h-3.5" />
-                <span>Buka Equalizer</span>
-              </button>
             </div>
 
-            {/* Sleep Timer */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <h3 className="text-sm md:text-base font-bold text-white">Pengatur Waktu Tidur (Sleep Timer)</h3>
-                  {isSleepTimerActive && (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#1DB954]/20 text-[#1DB954] font-mono">
-                      {formatRemainingTimer(remainingSeconds)}
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-[#b3b3b3]">
-                  Atur waktu mundur otomatis untuk menghentikan pemutaran musik saat Anda tertidur.
+            {/* Step 1 Content */}
+            {!stepTwoConfirm && (
+              <div className="space-y-3 mb-6">
+                <p className="text-xs md:text-sm text-white/80 leading-relaxed">
+                  {activeAction.description}
                 </p>
-              </div>
-              <button
-                onClick={openSleepTimerModal}
-                className="flex items-center gap-1.5 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-semibold transition-colors cursor-pointer shrink-0"
-              >
-                <Moon className="w-3.5 h-3.5" />
-                <span>{isSleepTimerActive ? 'Kelola Timer' : 'Atur Timer'}</span>
-              </button>
-            </div>
 
-            {/* Floating Mini-Player Widget */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <h3 className="text-sm md:text-base font-bold text-white">Mini-Player Melayang (Floating Widget)</h3>
-                  {isFloatingEnabled ? (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#1DB954]/20 text-[#1DB954]">
-                      Aktif
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/10 text-white/50">
-                      Nonaktif
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-[#b3b3b3]">
-                  Tampilkan widget pemutar melayang di sudut layar saat menjelajahi halaman lain.
-                </p>
-              </div>
-              <button
-                onClick={toggleFloatingEnabled}
-                className={cn(
-                  'relative w-12 h-6 rounded-full transition-colors cursor-pointer shrink-0',
-                  isFloatingEnabled ? 'bg-[#1DB954]' : 'bg-white/20'
-                )}
-                aria-label="Toggle Floating Widget"
-              >
-                <div
-                  className={cn(
-                    'w-5 h-5 rounded-full bg-white transition-transform absolute top-0.5',
-                    isFloatingEnabled ? 'left-6.5' : 'left-0.5'
-                  )}
-                />
-              </button>
-            </div>
-
-            {/* Floating Lyrics Pill (Batch 3 - Poin 80) */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <h3 className="text-sm md:text-base font-bold text-white">Pil Lirik Melayang (Quick View)</h3>
-                  {isFloatingLyricsEnabled ? (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#1DB954]/20 text-[#1DB954]">
-                      Aktif
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/10 text-white/50">
-                      Nonaktif
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-[#b3b3b3]">
-                  Tampilkan tombol pil lirik aktif sekilas yang mengapung di atas pemutar mini saat bernavigasi.
-                </p>
-              </div>
-              <button
-                onClick={toggleFloatingLyrics}
-                className={cn(
-                  'relative w-12 h-6 rounded-full transition-colors cursor-pointer shrink-0',
-                  isFloatingLyricsEnabled ? 'bg-[#1DB954]' : 'bg-white/20'
-                )}
-                aria-label="Toggle Floating Lyrics Pill"
-              >
-                <div
-                  className={cn(
-                    'w-5 h-5 rounded-full bg-white transition-transform absolute top-0.5',
-                    isFloatingLyricsEnabled ? 'left-6.5' : 'left-0.5'
-                  )}
-                />
-              </button>
-            </div>
-
-            {/* Battery Saver & Low-Power Mode (Batch 3 - Poin 74) */}
-            <div className="p-4 md:p-5 flex items-center justify-between gap-4">
-              <div className="flex-1 min-w-0 pr-2">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <h3 className="text-sm md:text-base font-bold text-white">Mode Hemat Daya Baterai</h3>
-                  {isLowPowerActive ? (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400">
-                      Aktif {isAutoLowPower ? '(Otomatis)' : '(Manual)'}
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/10 text-white/50">
-                      Nonaktif
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-[#b3b3b3]">
-                  Kurangi beban CPU/GPU dengan membatasi animasi visualizer ke ~15 FPS dan meredupkan efek blur saat baterai melemah.
-                </p>
-                {batteryLevel !== null && (
-                  <div className="flex items-center gap-1.5 mt-2 text-[11px] text-white/70">
-                    {isCharging ? (
-                      <BatteryCharging className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    ) : (
-                      <Battery className="w-3.5 h-3.5 text-white/70 shrink-0" />
-                    )}
-                    <span>
-                      Status Baterai: {Math.round(batteryLevel * 100)}%
-                      {isCharging ? ' (Sedang Mengisi Daya)' : ' (Baterai)'}
-                    </span>
-                  </div>
-                )}
-              </div>
-              <button
-                onClick={toggleManualSaver}
-                className={cn(
-                  'relative w-12 h-6 rounded-full transition-colors cursor-pointer shrink-0',
-                  isLowPowerActive ? 'bg-[#1DB954]' : 'bg-white/20'
-                )}
-                aria-label="Toggle Battery Saver Mode"
-              >
-                <div
-                  className={cn(
-                    'w-5 h-5 rounded-full bg-white transition-transform absolute top-0.5',
-                    isLowPowerActive ? 'left-6.5' : 'left-0.5'
-                  )}
-                />
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* SECTION 5: APP SHORTCUTS & INFO */}
-        <section className="space-y-4">
-          <div className="flex items-center gap-2 px-1">
-            <ShieldCheck className="w-5 h-5 text-[#1DB954]" />
-            <h2 className="text-sm font-bold uppercase tracking-wider text-[#b3b3b3]">Aplikasi</h2>
-          </div>
-
-          <div className="bg-[#181818] border border-white/5 rounded-2xl p-4 md:p-5 space-y-3 shadow-lg">
-            <div className="flex items-center justify-between text-sm py-1">
-              <span className="text-white/70">Aplikasi</span>
-              <span className="text-white font-semibold">MusicFY Web Player</span>
-            </div>
-            <div className="flex items-center justify-between text-sm py-1">
-              <span className="text-white/70">Versi PWA</span>
-              <span className="text-[#1DB954] font-semibold">v2.0 (Mobile Optimized)</span>
-            </div>
-            <div className="flex items-center justify-between text-sm py-1">
-              <span className="text-white/70">Penyimpanan Offline</span>
-              <span className="text-white font-semibold">IndexedDB Didukung</span>
-            </div>
-
-            <div className="pt-3 border-t border-white/5 flex flex-wrap gap-2">
-              <Link
-                href="/install-apk"
-                prefetch={false}
-                className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-semibold transition-colors cursor-pointer"
-              >
-                <Smartphone className="w-3.5 h-3.5 text-[#1DB954]" />
-                <span>Install APK / PWA</span>
-              </Link>
-            </div>
-          </div>
-        </section>
-
-        {/* SECTION 6: SELF-DIAGNOSIS & AUTOMATED RECOVERY (BATCH 3 - POIN 76) */}
-        <section className="space-y-4">
-          <div className="flex items-center gap-2 px-1">
-            <Activity className="w-5 h-5 text-[#1DB954]" />
-            <h2 className="text-sm font-bold uppercase tracking-wider text-[#b3b3b3]">
-              Diagnostik Klien & Pemulihan Mandiri
-            </h2>
-          </div>
-
-          <div className="bg-[#181818] border border-white/5 rounded-2xl p-4 md:p-5 shadow-lg space-y-4">
-            <div>
-              <h3 className="text-sm md:text-base font-bold text-white mb-0.5">
-                Uji Integritas Basis Data & State Pemutar
-              </h3>
-              <p className="text-xs text-[#b3b3b3]">
-                Pindai apakah ada data preferensi lokal yang korup, periksa koneksi IndexedDB, dan pulihkan kondisi sistem secara otomatis jika terjadi galat tak terduga.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap gap-2.5 pt-1">
-              <button
-                onClick={handleRunDiagnosis}
-                disabled={isRunningDiag}
-                className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <Activity className={cn('w-3.5 h-3.5 text-[#1DB954]', isRunningDiag && 'animate-spin')} />
-                <span>{isRunningDiag ? 'Memindai Sistem...' : 'Jalankan Diagnosis Mandiri'}</span>
-              </button>
-
-              <button
-                onClick={handleRepairState}
-                disabled={isRepairing}
-                className="flex items-center gap-2 px-4 py-2 bg-emerald-600/30 hover:bg-emerald-600/40 border border-emerald-500/30 text-emerald-300 rounded-xl text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <Wrench className={cn('w-3.5 h-3.5', isRepairing && 'animate-spin')} />
-                <span>{isRepairing ? 'Memulihkan...' : 'Pulihkan State Sistem'}</span>
-              </button>
-
-              <button
-                onClick={openDevModal}
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600/30 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-300 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
-                title="Buka Developer Diagnostic Panel (Ctrl+Shift+D)"
-              >
-                <Terminal className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Master Dev Panel</span>
-                <span className="text-[10px] bg-indigo-500/30 px-1.5 py-0.5 rounded text-indigo-200">Ctrl+Shift+D</span>
-              </button>
-            </div>
-
-            {diagReport && (
-              <div className="pt-3 border-t border-white/5 space-y-3">
-                <div className="flex items-center justify-between text-xs py-1">
-                  <span className="text-white/60">Status Kesehatan Keseluruhan:</span>
-                  <span
-                    className={cn(
-                      'font-bold px-2.5 py-0.5 rounded-full text-[10px]',
-                      diagReport.overallStatus === 'healthy'
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : diagReport.overallStatus === 'warning'
-                        ? 'bg-amber-500/20 text-amber-400'
-                        : 'bg-red-500/20 text-red-400'
-                    )}
-                  >
-                    {diagReport.overallStatus === 'healthy'
-                      ? 'Sistem Sehat (Optimal)'
-                      : diagReport.overallStatus === 'warning'
-                      ? 'Peringatan Ringan'
-                      : 'Perlu Pemulihan'}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                  <div className="p-2.5 rounded-xl bg-white/5 flex items-center justify-between">
-                    <span className="text-white/70">Penyimpanan Lokal:</span>
-                    <span className="font-semibold text-white">
-                      {diagReport.checks.localStorage.checkedKeys} kunci dicek (
-                      {diagReport.checks.localStorage.corruptedKeys.length === 0 ? '0 galat' : `${diagReport.checks.localStorage.corruptedKeys.length} galat`})
-                    </span>
-                  </div>
-
-                  <div className="p-2.5 rounded-xl bg-white/5 flex items-center justify-between">
-                    <span className="text-white/70">IndexedDB Versi:</span>
-                    <span className="font-semibold text-emerald-400">
-                      v{diagReport.checks.indexedDb.version} (
-                      {diagReport.checks.indexedDb.healthy ? 'Tersambung' : 'Kendala'})
-                    </span>
-                  </div>
-
-                  <div className="p-2.5 rounded-xl bg-white/5 flex items-center justify-between">
-                    <span className="text-white/70">Web Audio API:</span>
-                    <span className="font-semibold text-white">
-                      {diagReport.checks.audioContext.supported ? 'Didukung Hardware' : 'Tidak Didukung'}
-                    </span>
-                  </div>
-
-                  <div className="p-2.5 rounded-xl bg-white/5 flex items-center justify-between">
-                    <span className="text-white/70">Kuota Browser:</span>
-                    <span className="font-semibold text-white">
-                      {diagReport.checks.storageQuota.percentage}% Digunakan
-                    </span>
-                  </div>
-                </div>
-
-                {diagReport.issues.length > 0 && (
-                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs space-y-1.5">
-                    <div className="flex items-center gap-1.5 font-bold text-amber-400">
-                      <AlertCircle className="w-3.5 h-3.5" />
-                      <span>Catatan Temuan Diagnostik:</span>
-                    </div>
-                    {diagReport.issues.map((issue) => (
-                      <p key={issue.id} className="text-white/80 pl-5">
-                        • {issue.message}
-                      </p>
+                <div className="p-3.5 rounded-xl bg-white/[0.04] border border-white/[0.06] space-y-2 text-xs">
+                  <span className="font-semibold text-white/90 block">Rincian Efek Tindakan:</span>
+                  <ul className="space-y-1.5 text-white/70">
+                    {activeAction.details.map((detail, idx) => (
+                      <li key={idx} className="flex items-start gap-2">
+                        <span className="text-[#1DB954] mt-0.5">•</span>
+                        <span>{detail}</span>
+                      </li>
                     ))}
-                  </div>
-                )}
+                  </ul>
+                </div>
               </div>
             )}
+
+            {/* Step 2 Content (For Clear All Data) */}
+            {stepTwoConfirm && (
+              <div className="space-y-3 mb-6">
+                <div className="p-4 rounded-xl bg-red-950/40 border border-red-500/40 text-xs md:text-sm text-red-200 leading-relaxed">
+                  <p className="font-bold text-red-400 mb-1.5 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>PERINGATAN PEMULIHAN PABRIK</span>
+                  </p>
+                  Apakah Anda benar-benar yakin ingin melanjutkan? Seluruh unduhan offline,
+                  daftar putar kustom, lagu favorit, riwayat, dan preferensi lokal akan
+                  <strong> DIHAPUS SECARA PERMANEN</strong> dan aplikasi akan dimulai ulang dari awal.
+                </div>
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-white/5">
+              <button
+                type="button"
+                onClick={closeModal}
+                disabled={isProcessing}
+                className="px-4 py-2.5 rounded-xl text-xs md:text-sm font-semibold bg-white/10 hover:bg-white/15 text-white transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Batal
+              </button>
+
+              {activeAction.requiresTwoStep && !stepTwoConfirm ? (
+                <button
+                  type="button"
+                  onClick={() => setStepTwoConfirm(true)}
+                  disabled={isProcessing}
+                  className="px-4 py-2.5 rounded-xl text-xs md:text-sm font-bold bg-red-600 hover:bg-red-500 text-white transition-all cursor-pointer shadow-lg shadow-red-950/50"
+                >
+                  Lanjutkan Konfirmasi
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={executeAction}
+                  disabled={isProcessing}
+                  className={cn(
+                    'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs md:text-sm font-bold transition-all cursor-pointer shadow-lg disabled:opacity-50 active:scale-95',
+                    activeAction.isDestructive
+                      ? 'bg-red-600 hover:bg-red-500 text-white shadow-red-950/50'
+                      : 'bg-[#1DB954] hover:bg-[#1ed760] text-black shadow-[#1DB954]/20'
+                  )}
+                >
+                  {isProcessing ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Memproses...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>{stepTwoConfirm ? 'Ya, Hapus Semua Sekarang' : 'Lanjutkan Penghapusan'}</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           </div>
-        </section>
-      </div>
+        </div>
+      )}
     </main>
   );
 }

@@ -28,11 +28,6 @@ const SleepTimerModal = dynamic(
   { ssr: false, loading: () => null }
 );
 
-const EqualizerModal = dynamic(
-  () => import('@/components/EqualizerModal').then((mod) => mod.EqualizerModal || mod.default || mod),
-  { ssr: false, loading: () => null }
-);
-
 const FloatingWidget = dynamic(
   () => import('@/components/FloatingWidget').then((mod) => mod.FloatingWidget || mod.default || mod),
   { ssr: false, loading: () => null }
@@ -50,7 +45,6 @@ const DevDiagnosticModal = dynamic(
 
 import { ComponentErrorBoundary } from '@/components/ComponentErrorBoundary';
 import { usePlayerStore } from '@/lib/store';
-import { useEqualizerStore } from '@/lib/audioEffects';
 import { useSleepTimerStore } from '@/lib/sleepTimerStore';
 import { useContextMenuStore } from '@/lib/contextMenuStore';
 import { useDevModalStore } from '@/lib/devModalStore';
@@ -64,7 +58,6 @@ export function ClientModals() {
   }, []);
 
   const hasTrackToAdd = usePlayerStore((state) => state.trackToAdd !== null);
-  const isEqualizerOpen = useEqualizerStore((state) => state.isModalOpen);
   const isSleepTimerOpen = useSleepTimerStore((state) => state.isModalOpen);
   const isContextMenuOpen = useContextMenuStore((state) => state.isOpen);
   const isDevModalOpen = useDevModalStore((state) => state.isOpen);
@@ -91,12 +84,6 @@ export function ClientModals() {
       {isSleepTimerOpen && (
         <ComponentErrorBoundary fallbackTitle="Sleep Timer Modal">
           <SleepTimerModal />
-        </ComponentErrorBoundary>
-      )}
-
-      {isEqualizerOpen && (
-        <ComponentErrorBoundary fallbackTitle="Equalizer Modal">
-          <EqualizerModal />
         </ComponentErrorBoundary>
       )}
 

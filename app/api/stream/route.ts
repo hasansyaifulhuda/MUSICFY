@@ -58,10 +58,15 @@ export async function GET(request: Request) {
     if (cachedDisk) {
       // 1A. JSON Metadata for Cached Audio
       if (isJsonRequested) {
+        const resolvedTitle =
+          searchParams.get('title')?.replace(/\.mp3$/i, '').trim() ||
+          streamCache.get(videoId)?.title ||
+          videoId;
+
         return createSuccessResponse(
           {
             videoId,
-            title: 'Cached Audio Track',
+            title: resolvedTitle,
             streamUrl: `/api/stream?id=${encodeURIComponent(videoId)}`,
             format: 'mp3',
             acodec: 'mp3',

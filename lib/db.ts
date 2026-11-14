@@ -330,9 +330,12 @@ class DatabaseManager {
       const isConnectionIssue =
         errName === 'InvalidStateError' ||
         errName === 'TransactionInactiveError' ||
+        errName === 'UnknownError' ||
         errMsg.includes('closing') ||
         errMsg.includes('closed') ||
         errMsg.includes('connection is closing') ||
+        errMsg.includes('Force close') ||
+        errMsg.includes('delete origin') ||
         errMsg.includes('aborted');
 
       if (isConnectionIssue && maxRetries > 0) {
@@ -892,6 +895,17 @@ export const db = {
     }
   },
 
+  async clearRecentSearches(): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    try {
+      await dbManager.executeWithRetry((idb) => idb.clear('recent_searches'));
+      return true;
+    } catch (err) {
+      console.warn('[IDB] Failed to clear recent searches:', err);
+      return false;
+    }
+  },
+
   // -------------------------------------------------------------
   // Offline Tracks & Audio Blob Downloads
   // -------------------------------------------------------------
@@ -1422,9 +1436,13 @@ export const db = {
     try {
       await dbManager.executeWithRetry(async (idb) => {
         for (const s of stores) {
-          try {
-            await idb.clear(s as any);
-          } catch {}
+          if (idb.objectStoreNames.contains(s as any)) {
+            try {
+              await idb.clear(s as any);
+            } catch (storeErr) {
+              console.warn(`[IDB] Warning clearing store ${s}:`, storeErr);
+            }
+          }
         }
       });
       return true;
@@ -1432,6 +1450,13 @@ export const db = {
       console.warn('[IDB] Failed to clear all IndexedDB stores:', err);
       return false;
     }
+  },
+
+  /**
+   * Safely closes the active IndexedDB connection.
+   */
+  closeDatabase(): void {
+    dbManager.resetConnection();
   },
 
   /**

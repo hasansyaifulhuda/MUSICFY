@@ -11,3 +11,7 @@ storage/
 *.jks
 keystore.properties
 release/Archive.zip
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+img-local/*
+!img-local/.gitkeep

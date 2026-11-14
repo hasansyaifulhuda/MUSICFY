@@ -21,6 +21,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(MusicBackgroundPlugin.class);
+        registerPlugin(NativeAudioPlayerPlugin.class);
         super.onCreate(savedInstanceState);
 
         // Request runtime permission for Android 13+ (Tiramisu / API 33+) to allow media notifications
@@ -120,7 +121,6 @@ public class MainActivity extends BridgeActivity {
         try {
             Intent sIntent = new Intent(this, AudioForegroundService.class);
             sIntent.setAction(AudioForegroundService.ACTION_STOP);
-            startService(sIntent);
             stopService(sIntent);
 
             android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);

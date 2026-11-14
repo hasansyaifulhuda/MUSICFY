@@ -22,7 +22,7 @@ import {
 import { getMemoryStats, runMemoryGarbageMitigation, MemoryStats } from '@/lib/memorySentinel';
 import { db } from '@/lib/db';
 import { useNetworkStore } from '@/lib/networkMonitor';
-import { getPeakLimiterReduction, useEqualizerStore } from '@/lib/audioEffects';
+import { getPeakLimiterReduction } from '@/lib/audioEffects';
 import { getTelemetryLogs, clearTelemetryLogs, runSelfDiagnosis, repairSystemState, DiagnosticReport, TelemetryLog } from '@/lib/selfDiagnosis';
 import { blobManager } from '@/lib/blobManager';
 import { toast } from '@/lib/toast';
@@ -44,12 +44,6 @@ export default function DeveloperDiagnosticPage() {
   const tier = useNetworkStore((state) => state.tier);
   const effectiveType = useNetworkStore((state) => state.effectiveType);
   const measureLatency = useNetworkStore((state) => state.measureLatency);
-
-  const eqEnabled = useEqualizerStore((state) => state.isEnabled);
-  const eqPreset = useEqualizerStore((state) => state.activePreset);
-  const bassBoost = useEqualizerStore((state) => state.bassBoost);
-  const reverbPreset = useEqualizerStore((state) => state.reverbPreset);
-  const isSpatial = useEqualizerStore((state) => state.isSpatialSurround);
 
   const refreshAllStats = useCallback(async () => {
     setIsRefreshing(true);
@@ -260,22 +254,14 @@ export default function DeveloperDiagnosticPage() {
           </span>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        <div className="grid grid-cols-2 gap-3 text-xs">
           <div className="p-3 rounded-xl bg-white/5">
             <span className="text-white/50 block">Peak Limiter Reduction</span>
             <span className="text-base font-bold text-emerald-400">{limiterDb} dB</span>
           </div>
           <div className="p-3 rounded-xl bg-white/5">
-            <span className="text-white/50 block">Equalizer Preset</span>
-            <span className="text-base font-bold text-white">{eqEnabled ? eqPreset : 'Bypassed'}</span>
-          </div>
-          <div className="p-3 rounded-xl bg-white/5">
-            <span className="text-white/50 block">Reverb DSP</span>
-            <span className="text-base font-bold text-white">{reverbPreset.toUpperCase()}</span>
-          </div>
-          <div className="p-3 rounded-xl bg-white/5">
-            <span className="text-white/50 block">3D Spatial Surround</span>
-            <span className="text-base font-bold text-white">{isSpatial ? 'Active' : 'Off'}</span>
+            <span className="text-white/50 block">Audio Engine Mode</span>
+            <span className="text-base font-bold text-white">Direct Pass-Through</span>
           </div>
         </div>
       </section>

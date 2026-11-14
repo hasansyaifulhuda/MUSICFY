@@ -1,8 +1,24 @@
 import { create } from 'zustand';
 import { toast } from '@/lib/toast';
-import { pauseAudioSafely, safeFadeOut, getPersistentAudioElement } from './audioElement';
+import { pauseAudioSafely, safeFadeOut, cancelActiveFade, getPersistentAudioElement } from './audioElement';
 import { usePlayerStore } from './store';
 import { fadeOutWebAudioGain, restoreWebAudioGain } from './audioEffects';
+
+/**
+ * Safely converts store volume (0-100 percentage) to HTMLMediaElement volume range (0.0-1.0).
+ * Guarantees the value is strictly clamped between 0 and 1 to prevent IndexSizeError.
+ */
+export function getClampedAudioVolume(rawVolume?: number | null): number {
+  if (typeof rawVolume !== 'number' || isNaN(rawVolume)) {
+    return 1;
+  }
+  let normalized = rawVolume;
+  // If stored on a 0-100 scale (default 100), convert percentage to 0.0-1.0 range
+  if (rawVolume > 1 || (rawVolume === 1 && Number.isInteger(rawVolume))) {
+    normalized = rawVolume / 100;
+  }
+  return Math.max(0, Math.min(1, normalized));
+}
 
 export interface SleepTimerState {
   isActive: boolean;
@@ -39,11 +55,14 @@ export const useSleepTimerStore = create<SleepTimerState>((set, get) => ({
       intervalTimer = null;
     }
 
+    cancelActiveFade();
     isFadingOut = false;
     restoreWebAudioGain();
     const audio = getPersistentAudioElement();
     if (audio) {
-      audio.volume = usePlayerStore.getState().volume ?? 1;
+      try {
+        audio.volume = getClampedAudioVolume(usePlayerStore.getState().volume);
+      } catch {}
     }
 
     const now = Date.now();
@@ -71,11 +90,14 @@ export const useSleepTimerStore = create<SleepTimerState>((set, get) => ({
       intervalTimer = null;
     }
 
+    cancelActiveFade();
     isFadingOut = false;
     restoreWebAudioGain();
     const audio = getPersistentAudioElement();
     if (audio) {
-      audio.volume = usePlayerStore.getState().volume ?? 1;
+      try {
+        audio.volume = getClampedAudioVolume(usePlayerStore.getState().volume);
+      } catch {}
     }
 
     const wasActive = get().isActive;
@@ -124,6 +146,7 @@ export const useSleepTimerStore = create<SleepTimerState>((set, get) => ({
         clearInterval(intervalTimer);
         intervalTimer = null;
       }
+      cancelActiveFade();
       isFadingOut = false;
 
       set({
@@ -140,7 +163,9 @@ export const useSleepTimerStore = create<SleepTimerState>((set, get) => ({
         restoreWebAudioGain();
         const audio = getPersistentAudioElement();
         if (audio) {
-          audio.volume = usePlayerStore.getState().volume ?? 1;
+          try {
+            audio.volume = getClampedAudioVolume(usePlayerStore.getState().volume);
+          } catch {}
         }
       } catch {}
 

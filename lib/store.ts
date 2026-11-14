@@ -83,7 +83,7 @@ export function normalizeTrack(raw: any): Track {
       youtubeId: '',
       name: 'Unknown Track',
       artist: { name: 'Unknown Artist' },
-      thumbnails: [{ url: 'https://picsum.photos/300/300', width: 300, height: 300 }],
+      thumbnails: [{ url: '/icon.png', width: 300, height: 300 }],
     };
   }
 
@@ -103,7 +103,7 @@ export function normalizeTrack(raw: any): Track {
     artist = { name: rawArtist };
   }
 
-  let thumbnails = [{ url: 'https://picsum.photos/300/300', width: 300, height: 300 }];
+  let thumbnails = [{ url: '/icon.png', width: 300, height: 300 }];
   const rawThumb = raw.thumbnails || raw.thumbnail || (raw.track && (raw.track.thumbnails || raw.track.thumbnail));
   if (Array.isArray(rawThumb) && rawThumb.length > 0) {
     thumbnails = rawThumb.map((t: any) =>
@@ -144,6 +144,7 @@ interface PlayerState {
   isPlaying: boolean;
   isBuffering: boolean;
   isExpanded: boolean;
+  isFullScreenLyricsOpen: boolean;
   volume: number;
   progress: number;
   duration: number;
@@ -167,6 +168,8 @@ interface PlayerState {
   setPlaying: (playing: boolean) => void;
   setIsBuffering: (isBuffering: boolean) => void;
   setExpanded: (expanded: boolean) => void;
+  setFullScreenLyricsOpen: (open: boolean) => void;
+  toggleFullScreenLyrics: () => void;
   setProgress: (progress: number) => void;
   setDuration: (duration: number) => void;
   setVolume: (volume: number) => void;
@@ -191,6 +194,7 @@ export const usePlayerStore = create<PlayerState>()(
       isPlaying: false,
       isBuffering: false,
       isExpanded: false,
+      isFullScreenLyricsOpen: false,
       volume: 100,
       progress: 0,
       duration: 0,
@@ -258,6 +262,8 @@ export const usePlayerStore = create<PlayerState>()(
         // Sanitize repeatMode: reset 'one' to 'off' when explicitly picking a new song
         const nextRepeatMode = state.repeatMode === 'one' ? 'off' : state.repeatMode;
 
+        const trackDuration = typeof track.duration === 'number' && !isNaN(track.duration) && track.duration > 0 ? track.duration : 0;
+
         set({
           currentTrack: track,
           isPlaying: true,
@@ -265,6 +271,7 @@ export const usePlayerStore = create<PlayerState>()(
           originalQueue: originalQueue,
           queueIndex: newIndex,
           progress: 0,
+          duration: trackDuration,
           playContext: context,
           history: newHistory,
           playCounts: newPlayCounts,
@@ -288,11 +295,13 @@ export const usePlayerStore = create<PlayerState>()(
 
           playTrackImmediately(extractVideoId(nextTrack), true, (state.volume ?? 100) / 100);
 
+          const nextDur = typeof nextTrack.duration === 'number' && !isNaN(nextTrack.duration) && nextTrack.duration > 0 ? nextTrack.duration : 0;
           set({
             currentTrack: nextTrack,
             queueIndex: nextIndex,
             isPlaying: true,
             progress: 0,
+            duration: nextDur,
             history: newHistory,
             playCounts: newPlayCounts,
           });
@@ -310,11 +319,13 @@ export const usePlayerStore = create<PlayerState>()(
 
           playTrackImmediately(extractVideoId(nextTrack), true, (state.volume ?? 100) / 100);
 
+          const loopDur = typeof nextTrack.duration === 'number' && !isNaN(nextTrack.duration) && nextTrack.duration > 0 ? nextTrack.duration : 0;
           set({
             currentTrack: nextTrack,
             queueIndex: nextIndex,
             isPlaying: true,
             progress: 0,
+            duration: loopDur,
             history: newHistory,
             playCounts: newPlayCounts,
           });
@@ -365,6 +376,7 @@ export const usePlayerStore = create<PlayerState>()(
 
                     playTrackImmediately(extractVideoId(nextTrack), true, (state.volume ?? 100) / 100);
 
+                    const nextDur = typeof nextTrack.duration === 'number' && !isNaN(nextTrack.duration) && nextTrack.duration > 0 ? nextTrack.duration : 0;
                     set({
                       queue: [...queue, ...finalNextTracks],
                       originalQueue: state.originalQueue.length > 0 ? [...state.originalQueue, ...nextTracks] : [],
@@ -372,6 +384,7 @@ export const usePlayerStore = create<PlayerState>()(
                       queueIndex: queueIndex + 1,
                       isPlaying: true,
                       progress: 0,
+                      duration: nextDur,
                       history: newHistory,
                       playCounts: newPlayCounts,
                     });
@@ -420,11 +433,13 @@ export const usePlayerStore = create<PlayerState>()(
 
           playTrackImmediately(extractVideoId(prevTrack), true, (state.volume ?? 100) / 100);
 
+          const prevDur = typeof prevTrack.duration === 'number' && !isNaN(prevTrack.duration) && prevTrack.duration > 0 ? prevTrack.duration : 0;
           set({
             currentTrack: prevTrack,
             queueIndex: prevIndex,
             isPlaying: true,
             progress: 0,
+            duration: prevDur,
             history: newHistory,
             playCounts: newPlayCounts,
           });
@@ -442,11 +457,13 @@ export const usePlayerStore = create<PlayerState>()(
 
           playTrackImmediately(extractVideoId(prevTrack), true, (state.volume ?? 100) / 100);
 
+          const loopDur = typeof prevTrack.duration === 'number' && !isNaN(prevTrack.duration) && prevTrack.duration > 0 ? prevTrack.duration : 0;
           set({
             currentTrack: prevTrack,
             queueIndex: prevIndex,
             isPlaying: true,
             progress: 0,
+            duration: loopDur,
             history: newHistory,
             playCounts: newPlayCounts,
           });
@@ -469,11 +486,13 @@ export const usePlayerStore = create<PlayerState>()(
 
         playTrackImmediately(extractVideoId(targetTrack), true, (state.volume ?? 100) / 100);
 
+        const targetDur = typeof targetTrack.duration === 'number' && !isNaN(targetTrack.duration) && targetTrack.duration > 0 ? targetTrack.duration : 0;
         set({
           currentTrack: targetTrack,
           queueIndex: index,
           isPlaying: true,
           progress: 0,
+          duration: targetDur,
           history: newHistory,
           playCounts: newPlayCounts,
         });
@@ -521,6 +540,8 @@ export const usePlayerStore = create<PlayerState>()(
       setPlaying: (playing) => set({ isPlaying: playing }),
       setIsBuffering: (isBuffering) => set({ isBuffering }),
       setExpanded: (expanded) => set({ isExpanded: expanded }),
+      setFullScreenLyricsOpen: (open) => set({ isFullScreenLyricsOpen: open }),
+      toggleFullScreenLyrics: () => set((state) => ({ isFullScreenLyricsOpen: !state.isFullScreenLyricsOpen })),
       setProgress: (progress) => set({ progress }),
       setDuration: (duration) => set({ duration }),
       setVolume: (volume) => set({ volume }),
