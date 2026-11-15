@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import { toast } from '@/lib/toast';
 import { playTrackImmediately } from './audioElement';
 import { debouncedStorage } from './debouncedStorage';
+import { isNativeAndroid, stop as nativeStop } from './nativeAudioBridge';
 
 export interface Track {
   videoId: string;
@@ -489,6 +490,9 @@ export const usePlayerStore = create<PlayerState>()(
         } else if (index === state.queueIndex) {
           if (newQueue.length === 0) {
             set({ queue: [], queueIndex: -1, currentTrack: null, isPlaying: false, progress: 0 });
+            if (isNativeAndroid()) {
+              nativeStop().catch(() => {});
+            }
             return;
           }
           newIndex = Math.min(state.queueIndex, newQueue.length - 1);

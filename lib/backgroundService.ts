@@ -1,4 +1,5 @@
 import { registerPlugin } from '@capacitor/core';
+import { isNativeAndroid, stop as nativeStop } from './nativeAudioBridge';
 
 export interface MusicBackgroundPluginInterface {
   startForegroundService(): Promise<{ success: boolean; status: string }>;
@@ -15,6 +16,11 @@ export const MusicBackgroundService = registerPlugin<MusicBackgroundPluginInterf
  */
 export async function startBackgroundAudio(): Promise<void> {
   if (typeof window === 'undefined') return;
+
+  // On native Android running Media3 ExoPlayer, MusicMediaSessionService manages its own foreground notification and audio focus.
+  if (isNativeAndroid()) {
+    return;
+  }
 
   // 1. Native Capacitor Plugin
   try {
@@ -37,6 +43,10 @@ export async function startBackgroundAudio(): Promise<void> {
 export async function stopBackgroundAudio(): Promise<void> {
   if (typeof window === 'undefined') return;
 
+  if (isNativeAndroid()) {
+    return;
+  }
+
   // 1. Native Capacitor Plugin
   try {
     if (MusicBackgroundService && typeof MusicBackgroundService.stopForegroundService === 'function') {
@@ -58,6 +68,13 @@ export async function stopBackgroundAudio(): Promise<void> {
 export async function terminateBackgroundAudio(): Promise<void> {
   if (typeof window === 'undefined') return;
 
+  if (isNativeAndroid()) {
+    try {
+      await nativeStop();
+    } catch {}
+    return;
+  }
+
   try {
     if ((window as any).AndroidMediaBridge && typeof (window as any).AndroidMediaBridge.destroySession === 'function') {
       (window as any).AndroidMediaBridge.destroySession();
@@ -71,7 +88,7 @@ export async function terminateBackgroundAudio(): Promise<void> {
   } catch {}
 
   try {
-    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+    if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
       navigator.mediaSession.playbackState = 'none';
       navigator.mediaSession.metadata = null;
     }

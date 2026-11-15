@@ -9,7 +9,7 @@ import React, {
   useMemo,
 } from 'react';
 import { cn } from '@/lib/utils';
-import { getPersistentAudioElement } from '@/lib/audioElement';
+import { getPersistentAudioElement, safePlayAudio } from '@/lib/audioElement';
 import { useLyricsOffsetStore } from '@/lib/lyricsOffsetStore';
 import { parseTimestampToSeconds, findActiveLyricIndex } from '@/lib/performance';
 import { Radio, Sparkles, Disc3 } from 'lucide-react';
@@ -649,7 +649,7 @@ export const KaraokeLyrics = memo(function KaraokeLyrics({
         if (audio) {
           audio.currentTime = time;
           if (audio.paused) {
-            audio.play().catch(() => {});
+            safePlayAudio(audio).catch(() => {});
           }
         }
       }

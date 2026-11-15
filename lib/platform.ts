@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+
 /**
  * Client Platform & Environment Detection Utility
  * Detects Windows, Debian/Linux, Android, Capacitor APK, and PWA environments.
@@ -42,12 +44,12 @@ export function detectPlatform(): PlatformInfo {
 
   // 1. Android & Native Capacitor APK Detection
   const isAndroid = /android/i.test(ua);
-  const hasCapacitor = Boolean(
-    (window as any).Capacitor?.isNativePlatform?.() ||
-    (window as any).Capacitor?.getPlatform?.() === 'android'
+  const isCapacitorNative = Boolean(
+    (typeof Capacitor !== 'undefined' && Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') ||
+    ((window as any).Capacitor?.isNativePlatform?.() && (window as any).Capacitor?.getPlatform?.() === 'android')
   );
   const hasAndroidBridge = Boolean((window as any).AndroidMediaBridge);
-  const isAndroidApk = isAndroid && (hasCapacitor || hasAndroidBridge);
+  const isAndroidApk = isCapacitorNative || (isAndroid && hasAndroidBridge);
 
   // 2. Windows Environment Detection
   const isWindows = /windows|win32|win64/i.test(ua) || /win/i.test(platform);
@@ -64,7 +66,7 @@ export function detectPlatform(): PlatformInfo {
   const isPWA =
     Boolean(window.matchMedia?.('(display-mode: standalone)').matches) ||
     Boolean((navigator as any).standalone) ||
-    document.referrer.includes('android-app://');
+    Boolean(typeof document !== 'undefined' && document.referrer?.includes('android-app://'));
 
   // 6. Mobile Device Detection
   const isMobile = isAndroid || isIOS || /mobile|tablet|phone/i.test(ua);

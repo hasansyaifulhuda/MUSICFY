@@ -81,6 +81,7 @@ public class MediaSessionBridge {
     private long currentPositionMs = 0;
     private long currentDurationMs = 0;
     private long playbackStartTimeMs = 0;
+    private final java.util.concurrent.atomic.AtomicLong artworkRequestId = new java.util.concurrent.atomic.AtomicLong(0);
 
     public MediaSessionBridge(Activity activity, WebView webView) {
         instance = this;
@@ -497,11 +498,12 @@ public class MediaSessionBridge {
         }
     }
 
-    private void setFallbackArtwork() {
+    private void setFallbackArtwork(long expectedRequestId) {
         try {
+            if (expectedRequestId != artworkRequestId.get()) return;
             if (currentArtwork == null) {
                 Bitmap appIcon = BitmapFactory.decodeResource(activity.getResources(), R.mipmap.ic_launcher);
-                if (appIcon != null) {
+                if (appIcon != null && expectedRequestId == artworkRequestId.get()) {
                     currentArtwork = appIcon;
                     activity.runOnUiThread(this::showNotification);
                 }
@@ -510,8 +512,10 @@ public class MediaSessionBridge {
     }
 
     private void loadArtwork(String urlStr) {
+        final long requestId = artworkRequestId.incrementAndGet();
+
         if (urlStr == null || urlStr.trim().isEmpty()) {
-            setFallbackArtwork();
+            setFallbackArtwork(requestId);
             return;
         }
 
@@ -522,7 +526,7 @@ public class MediaSessionBridge {
                 if (comma != -1) {
                     byte[] data = Base64.decode(urlStr.substring(comma + 1), Base64.DEFAULT);
                     Bitmap bmp = BitmapFactory.decodeByteArray(data, 0, data.length);
-                    if (bmp != null) {
+                    if (bmp != null && requestId == artworkRequestId.get()) {
                         currentArtwork = bmp;
                         activity.runOnUiThread(this::showNotification);
                         return;
@@ -531,11 +535,13 @@ public class MediaSessionBridge {
             } catch (Exception ignored) {}
         }
 
-        // 2. HTTP/HTTPS Loader with redirects and User-Agent
+        // 2. HTTP/HTTPS Loader with redirects, User-Agent, and race-condition guard
         new Thread(() -> {
             HttpURLConnection conn = null;
             InputStream in = null;
             try {
+                if (requestId != artworkRequestId.get()) return;
+
                 URL url = new URL(urlStr);
                 conn = (HttpURLConnection) url.openConnection();
                 conn.setInstanceFollowRedirects(true);
@@ -544,11 +550,14 @@ public class MediaSessionBridge {
                 conn.setReadTimeout(8000);
                 conn.connect();
 
+                if (requestId != artworkRequestId.get()) return;
+
                 int code = conn.getResponseCode();
                 if (code == HttpURLConnection.HTTP_MOVED_PERM || code == HttpURLConnection.HTTP_MOVED_TEMP) {
                     String redirectUrl = conn.getHeaderField("Location");
                     if (redirectUrl != null) {
                         conn.disconnect();
+                        if (requestId != artworkRequestId.get()) return;
                         url = new URL(redirectUrl);
                         conn = (HttpURLConnection) url.openConnection();
                         conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10; Mobile)");
@@ -558,11 +567,15 @@ public class MediaSessionBridge {
                     }
                 }
 
+                if (requestId != artworkRequestId.get()) return;
+
                 in = conn.getInputStream();
                 Bitmap bmp = BitmapFactory.decodeStream(in);
                 if (bmp != null) {
-                    currentArtwork = bmp;
-                    activity.runOnUiThread(this::showNotification);
+                    if (requestId == artworkRequestId.get()) {
+                        currentArtwork = bmp;
+                        activity.runOnUiThread(this::showNotification);
+                    }
                     return;
                 }
             } catch (Exception ignored) {
@@ -572,7 +585,9 @@ public class MediaSessionBridge {
             }
 
             // Fallback: If network failed or offline, load app icon so notification is never blank
-            setFallbackArtwork();
+            if (requestId == artworkRequestId.get()) {
+                setFallbackArtwork(requestId);
+            }
         }).start();
     }
 
@@ -595,7 +610,7 @@ public class MediaSessionBridge {
             this.currentArtworkUrl = artworkUrl;
             loadArtwork(artworkUrl);
         } else if (currentArtwork == null) {
-            setFallbackArtwork();
+            setFallbackArtwork(artworkRequestId.get());
         }
 
         activity.runOnUiThread(this::showNotification);
@@ -660,10 +675,9 @@ public class MediaSessionBridge {
                 }
                 Intent sIntent = new Intent(activity, AudioForegroundService.class);
                 sIntent.setAction(AudioForegroundService.ACTION_STOP);
-                activity.startService(sIntent);
                 activity.stopService(sIntent);
 
-                if (notificationManager != null) {
+                if (notificationManager != null && mediaSession != null) {
                     notificationManager.cancel(NOTIFICATION_ID);
                 }
                 lastNotification = null;
@@ -697,11 +711,10 @@ public class MediaSessionBridge {
             Intent sIntent = new Intent(activity, AudioForegroundService.class);
             sIntent.setAction(AudioForegroundService.ACTION_STOP);
             try {
-                activity.startService(sIntent);
                 activity.stopService(sIntent);
             } catch (Exception ignored) {}
 
-            if (notificationManager != null) {
+            if (notificationManager != null && mediaSession != null) {
                 notificationManager.cancel(NOTIFICATION_ID);
             }
             lastNotification = null;

@@ -25,6 +25,20 @@ import { useAudioQualityStore } from '@/lib/audioQualityStore';
 import { deduplicatedFetch } from '@/lib/clientDeduplication';
 import { useDevModalStore } from '@/lib/devModalStore';
 import { startBackgroundAudio, stopBackgroundAudio, terminateBackgroundAudio } from '@/lib/backgroundService';
+import {
+  isNativeAndroid,
+  loadTrack as nativeLoadTrack,
+  setPlaylist as nativeSetPlaylist,
+  play as nativePlay,
+  pause as nativePause,
+  seekTo as nativeSeekTo,
+  setVolume as nativeSetVolume,
+  setRepeatMode as nativeSetRepeatMode,
+  subscribeNativeAudioEvents,
+  syncNativePlaybackState,
+  checkAndRequestNotificationPermission,
+  NativeTrackData,
+} from '@/lib/nativeAudioBridge';
 
 declare global {
   interface Window {
@@ -114,6 +128,68 @@ function toAbsoluteArtworkUrl(url: string | undefined, size = 512): string {
   return hires;
 }
 
+/**
+ * Ensures audio stream URLs are fully qualified absolute HTTPS URLs
+ * so AndroidX Media3 ExoPlayer can resolve and stream without host failure.
+ */
+function toAbsoluteStreamUrl(streamUrl: string): string {
+  if (!streamUrl) return '';
+  if (streamUrl.startsWith('http://') || streamUrl.startsWith('https://')) {
+    return streamUrl;
+  }
+  if (typeof window !== 'undefined') {
+    const origin = window.location.origin;
+    if (!origin || origin.startsWith('capacitor://') || origin.includes('localhost')) {
+      return `https://shanz.my.id${streamUrl.startsWith('/') ? '' : '/'}${streamUrl}`;
+    }
+    try {
+      return new URL(streamUrl, origin).href;
+    } catch {
+      return `https://shanz.my.id${streamUrl.startsWith('/') ? '' : '/'}${streamUrl}`;
+    }
+  }
+  return `https://shanz.my.id${streamUrl.startsWith('/') ? '' : '/'}${streamUrl}`;
+}
+
+/**
+ * Converts a MUSICFY Track object into NativeTrackData required by NativeAudioPlayerPlugin.
+ */
+function convertTrackToNativeTrackData(
+  track: Track,
+  autoPlay: boolean = true,
+  startPositionMs: number = 0
+): NativeTrackData | null {
+  const vid = extractVideoId(track);
+  if (!vid) return null;
+
+  const rawThumbnail =
+    (track as any).offlineThumbnail ||
+    track.thumbnails?.[track.thumbnails.length - 1]?.url ||
+    (track as any).thumbnail ||
+    (track as any).img;
+
+  const artist = Array.isArray(track.artist)
+    ? track.artist.map((a: any) => (typeof a === 'string' ? a : a?.name || '')).filter(Boolean).join(', ')
+    : (typeof track.artist === 'string' ? track.artist : track.artist?.name) || 'Unknown Artist';
+
+  const albumTitle = (track as any).album?.name || (track as any).album || 'MusicFY';
+  const trackTitle = track.name || 'MusicFY Track';
+  const relativeStreamUrl = useAudioQualityStore.getState().getStreamUrl(vid);
+  const uri = toAbsoluteStreamUrl(relativeStreamUrl);
+  const artworkUri = toAbsoluteArtworkUrl(rawThumbnail, 512);
+
+  return {
+    uri,
+    mediaId: vid,
+    title: trackTitle,
+    artist,
+    album: albumTitle,
+    artworkUri,
+    autoPlay,
+    positionMs: startPositionMs,
+  };
+}
+
 export function MusicProvider({ children }: { children: React.ReactNode }) {
   // Store subscriptions
   const currentTrack = usePlayerStore((state) => state.currentTrack);
@@ -146,13 +222,15 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const lastProgressRef = useRef<number>(-1);
   const lastMediaSessionUpdateRef = useRef<number>(0);
   const activeBlobUrlRef = useRef<string | null>(null);
-  const playNextRef = useRef<() => void>(() => {});
+  const playNextRef = useRef<() => void>(() => { });
   const wakeLockRef = useRef<any>(null);
   const pendingResumePositionRef = useRef<number | null>(null);
   const isSessionRestoredRef = useRef<boolean>(false);
   const preloadedNextTrackIdRef = useRef<string | null>(null);
   const preloadAudioRef = useRef<HTMLAudioElement | null>(null);
   const hasTriggeredCrossfadeRef = useRef<boolean>(false);
+  const lastHandledEndedTimestampRef = useRef<number>(0);
+  const lastHandledEndedMediaIdRef = useRef<string | null>(null);
 
   // User gesture & playback failure safeguards
   const hasUserGestureRef = useRef<boolean>(false);
@@ -170,10 +248,69 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const setProgress = usePlayerStore((state) => state.setProgress);
   const setDuration = usePlayerStore((state) => state.setDuration);
   const setVolumeStore = usePlayerStore((state) => state.setVolume);
-  const toggleShuffle = usePlayerStore((state) => state.toggleShuffle);
+  const toggleShuffleStore = usePlayerStore((state) => state.toggleShuffle);
+  const toggleShuffle = useCallback(() => {
+    toggleShuffleStore();
+    if (isNativeAndroid()) {
+      setTimeout(() => {
+        const state = usePlayerStore.getState();
+        const currentQ = state.queue;
+        const currentIdx = state.queueIndex;
+        const currentTrack = state.currentTrack;
+        const curRepeat = state.repeatMode;
+        const currentVid = currentTrack ? extractVideoId(currentTrack) : '';
+
+        if (Array.isArray(currentQ) && currentQ.length > 1 && currentTrack) {
+          const nativeTracks: NativeTrackData[] = [];
+          let activeTrackNativeIndex = -1;
+
+          currentQ.forEach((t, qIdx) => {
+            const tVid = extractVideoId(t);
+            const data = convertTrackToNativeTrackData(t, true, 0);
+            if (data && data.uri) {
+              const nIdx = nativeTracks.length;
+              nativeTracks.push(data);
+              if (tVid === currentVid || (activeTrackNativeIndex === -1 && qIdx === currentIdx)) {
+                activeTrackNativeIndex = nIdx;
+              }
+            }
+          });
+
+          if (activeTrackNativeIndex === -1) {
+            console.warn('[MusicContext] Active track missing from shuffled native playlist');
+            return;
+          }
+
+          const posMs = Math.round(state.progress * 1000);
+          if (nativeTracks[activeTrackNativeIndex]) {
+            nativeTracks[activeTrackNativeIndex].positionMs = posMs;
+          }
+          nativeSetPlaylist({
+            tracks: nativeTracks,
+            startIndex: activeTrackNativeIndex,
+            startPositionMs: posMs,
+            autoPlay: state.isPlaying,
+          })
+            .then(() => {
+              nativeSetRepeatMode(curRepeat).catch(() => { });
+            })
+            .catch((err) => {
+              console.warn('[MusicContext] Failed to update shuffled playlist on native player:', err);
+            });
+        }
+      }, 0);
+    }
+  }, [toggleShuffleStore]);
   const toggleRepeatStore = usePlayerStore((state) => state.toggleRepeat);
   const toggleRepeat = useCallback(() => {
     toggleRepeatStore();
+    if (isNativeAndroid()) {
+      setTimeout(() => {
+        const currentRepeat = usePlayerStore.getState().repeatMode;
+        nativeSetRepeatMode(currentRepeat).catch(() => { });
+      }, 0);
+      return;
+    }
     // Immediate native audio element synchronization for instant repeat mode transition
     setTimeout(() => {
       const audio = audioRef.current || getPersistentAudioElement();
@@ -223,28 +360,32 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       if (db.isOfflineTrackSync(nextVid)) return;
       if (typeof navigator !== 'undefined' && !navigator.onLine) return;
 
-      const streamUrl = useAudioQualityStore.getState().getStreamUrl(nextVid);
-      if (streamUrl && typeof window !== 'undefined') {
-        // 1. Preload early chunk from backend to prime yt-dlp resolver & memory proxy
-        fetch(streamUrl, {
-          headers: { Range: 'bytes=0-262143' },
-          priority: 'low' as any,
-        }).catch(() => {});
+      // In Web/PWA mode, preload audio chunk & media header in hidden audio element.
+      // On APK, ExoPlayer manages native background buffering automatically.
+      if (!isNativeAndroid()) {
+        const streamUrl = useAudioQualityStore.getState().getStreamUrl(nextVid);
+        if (streamUrl && typeof window !== 'undefined') {
+          // 1. Preload early chunk from backend to prime yt-dlp resolver & memory proxy
+          fetch(streamUrl, {
+            headers: { Range: 'bytes=0-262143' },
+            priority: 'low' as any,
+          }).catch(() => { });
 
-        // 2. Pre-decode media header in hidden audio element for true 0-delay gapless transition
-        try {
-          if (typeof Audio !== 'undefined') {
-            if (!preloadAudioRef.current) {
-              preloadAudioRef.current = new Audio();
-              preloadAudioRef.current.muted = true;
+          // 2. Pre-decode media header in hidden audio element for true 0-delay gapless transition
+          try {
+            if (typeof Audio !== 'undefined') {
+              if (!preloadAudioRef.current) {
+                preloadAudioRef.current = new Audio();
+                preloadAudioRef.current.muted = true;
+              }
+              preloadAudioRef.current.preload = 'auto';
+              if (preloadAudioRef.current.src !== streamUrl) {
+                preloadAudioRef.current.src = streamUrl;
+                preloadAudioRef.current.load();
+              }
             }
-            preloadAudioRef.current.preload = 'auto';
-            if (preloadAudioRef.current.src !== streamUrl) {
-              preloadAudioRef.current.src = streamUrl;
-              preloadAudioRef.current.load();
-            }
-          }
-        } catch {}
+          } catch { }
+        }
       }
 
       // 3. Preload lyrics in advance
@@ -264,9 +405,9 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         const url = `/api/lyrics?id=${encodeURIComponent(nextVid)}&title=${encodeURIComponent(
           nextTrack.name || ''
         )}&artist=${encodeURIComponent(artist)}&duration=${dur}`;
-        deduplicatedFetch(url).catch(() => {});
+        deduplicatedFetch(url).catch(() => { });
       }
-    } catch {}
+    } catch { }
   }, []);
 
   // Safely register physical user gesture (click/touch/key) to allow AudioContext creation
@@ -308,7 +449,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       if (wakeLockRef.current) {
         try {
           wakeLockRef.current.release();
-        } catch {}
+        } catch { }
         wakeLockRef.current = null;
       }
     };
@@ -332,6 +473,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         : 0;
 
       if (
+        !isNativeAndroid() &&
         typeof navigator !== 'undefined' &&
         'mediaSession' in navigator &&
         typeof navigator.mediaSession.setPositionState === 'function'
@@ -356,8 +498,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // Synchronize lockscreen/notification scrubber in Android APK
-      if (typeof window !== 'undefined' && window.AndroidMediaBridge) {
+      // Synchronize lockscreen/notification scrubber in Android APK (Legacy bridge fallback only)
+      if (typeof window !== 'undefined' && window.AndroidMediaBridge && !isNativeAndroid()) {
         try {
           const isCurrentPlaying = usePlayerStore.getState().isPlaying;
           window.AndroidMediaBridge.updatePlaybackState(
@@ -365,9 +507,9 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
             Math.round(Math.max(0, pos) * 1000),
             Math.round(Math.max(0, dur) * 1000)
           );
-        } catch {}
+        } catch { }
       }
-    } catch {}
+    } catch { }
   }, []);  // Restores last playback position, queue, and player state after browser reload or unexpected PWA termination
   useEffect(() => {
     if (isSessionRestoredRef.current) return;
@@ -424,7 +566,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           };
           localStorage.setItem(AUDIO_SESSION_STORAGE_KEY, JSON.stringify(snapshot));
         }
-      } catch {}
+      } catch { }
     };
 
     const handleVisibilityChange = () => {
@@ -463,7 +605,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     try {
       initAudioEffects();
       resumeAudioContextSafely();
-    } catch {}
+    } catch { }
   }, []);
 
   // Declare W3C AudioSession 'playback' mode for mobile media focus (iOS & modern Android)
@@ -472,17 +614,17 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     if (typeof navigator !== 'undefined' && 'audioSession' in navigator) {
       try {
         (navigator as any).audioSession.type = 'playback';
-      } catch {}
+      } catch { }
     }
 
     // Proactively initialize offline cache and request persistent storage
-    db.initOfflineCache().catch(() => {});
+    db.initOfflineCache().catch(() => { });
     if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().then((granted) => {
         if (granted) {
           console.log('Storage will not be cleared except by explicit user action');
         }
-      }).catch(() => {});
+      }).catch(() => { });
     }
   }, []);
 
@@ -500,6 +642,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
    * 3. CLEAN RESTART: Resets audioRef.current.currentTime = 0 and cleanly invokes play().
    */
   const handleLoop = useCallback(() => {
+    if (isNativeAndroid()) return;
     const audio = audioRef.current || getPersistentAudioElement();
     if (!audio) return;
 
@@ -527,23 +670,20 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     updateMediaSessionPosition(0, audio.duration || 0);
 
     // 4. Safe single-instance playback resumption
-    try {
-      const playPromise = audioRef.current ? audioRef.current.play() : audio.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          if (err?.name !== 'AbortError') {
-            console.warn('[AudioLoop] Safe play error:', err);
-          }
-        });
-      }
-    } catch {}
+    const targetAudio = audioRef.current || audio;
+    safePlayAudio(targetAudio).catch(() => { });
   }, [setProgress, updateMediaSessionPosition, setIsBuffering]);
 
   // =========================================================================
   // Native HTML5 Audio Engine & Hardware Event Listeners
   // Native events (timeupdate, ended, playing) bypass browser background timer throttling
+  // ACTIVE ONLY IN WEB / PWA MODE (Bypassed entirely in Android APK)
   // =========================================================================
   useEffect(() => {
+    if (isNativeAndroid()) {
+      return;
+    }
+
     const audio = audioRef.current || getPersistentAudioElement();
     if (!audio) return;
     audioRef.current = audio;
@@ -677,8 +817,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       try {
         initAudioEffects();
         resumeAudioContextSafely();
-      } catch {}
-      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      } catch { }
+      if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing';
       }
       if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration) && audio.duration > 0) {
@@ -691,7 +831,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       // DO NOT pause if tab is merely hidden or buffering
       if (!audio.seeking && audio.paused) {
         setPlayingStore(false);
-        if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
           navigator.mediaSession.playbackState = 'paused';
         }
         if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration) && audio.duration > 0) {
@@ -718,7 +858,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           retryCountPerTrackRef.current.delete(vid);
         }
       }
-      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing';
       }
       if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration) && audio.duration > 0) {
@@ -773,7 +913,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       if (isDeviceOffline || isBlobSrc) {
         try {
           audio.pause();
-        } catch {}
+        } catch { }
         setPlayingStore(false);
         setIsBuffering(false);
         if (isDeviceOffline && !isBlobSrc) {
@@ -799,7 +939,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
             const streamUrl = `/api/stream?id=${encodeURIComponent(trackId)}&retry=1&t=${Date.now()}`;
             audio.src = streamUrl;
             audio.load();
-            audio.play().catch(() => {});
+            audio.play().catch(() => { });
           }
         }, 1000);
         return;
@@ -819,7 +959,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
               }
             });
             return;
-          } catch {}
+          } catch { }
         }
 
         // If retry also failed and no offline copy exists:
@@ -829,7 +969,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
             audio.pause();
             audio.removeAttribute('src');
             audio.load();
-          } catch {}
+          } catch { }
         }
         setIsBuffering(false);
         setPlayingStore(false);
@@ -842,10 +982,10 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       setPlayingStore(false);
       setIsBuffering(false);
 
-      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
         try {
           navigator.mediaSession.playbackState = 'paused';
-        } catch {}
+        } catch { }
       }
 
       // Display friendly error notification to user ONLY if user consciously initiated playback
@@ -899,62 +1039,177 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, [setPlayingStore, setIsBuffering, setDuration, setProgress, updateMediaSessionPosition, cleanupActiveBlobUrl, preloadNextTrackSafely, handleLoop]);
 
   // =========================================================================
-  // Playback Navigation (playNext, playPrev)
-  // =========================================================================
-  const playNext = useCallback(async () => {
-    hasTriggeredCrossfadeRef.current = false;
-    hasUserGestureRef.current = true;
-    playbackInitiatedAtRef.current = Date.now();
-    retryCountPerTrackRef.current.clear();
-    initAudioContextKeepAlive();
-    setPlayingStore(true);
-    setIsBuffering(true);
-    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
-      navigator.mediaSession.playbackState = 'playing';
-    }
-    await playNextStore();
-  }, [playNextStore, setPlayingStore, setIsBuffering, initAudioContextKeepAlive]);
-
-  useEffect(() => {
-    playNextRef.current = () => {
-      playNext();
-    };
-  }, [playNext]);
-
-  const playPrev = useCallback(() => {
-    hasTriggeredCrossfadeRef.current = false;
-    hasUserGestureRef.current = true;
-    playbackInitiatedAtRef.current = Date.now();
-    retryCountPerTrackRef.current.clear();
-    initAudioContextKeepAlive();
-    setPlayingStore(true);
-    setIsBuffering(true);
-    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
-      navigator.mediaSession.playbackState = 'playing';
-    }
-    playPrevStore();
-  }, [playPrevStore, setPlayingStore, setIsBuffering, initAudioContextKeepAlive]);
-
-  // =========================================================================
-  // Core Track Loader: Loads audio source directly into Persistent HTML5 Audio
+  // Core Track Loader: Loads audio source (ExoPlayer for APK, HTML5 Audio for Web)
   // =========================================================================
   const loadAndPlayTrack = useCallback(
     async (targetVid: string, autoPlay: boolean = true, startPosition?: number) => {
-      const audio = getPersistentAudioElement();
-      if (!audio || !targetVid) return;
+      if (!targetVid) return;
 
       const resumePosition =
         startPosition !== undefined
           ? startPosition
           : pendingResumePositionRef.current !== null
-          ? pendingResumePositionRef.current
-          : 0;
+            ? pendingResumePositionRef.current
+            : 0;
       pendingResumePositionRef.current = null;
 
       if (retryTimerRef.current) {
         clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
       }
+
+      // =======================================================================
+      // 1. NATIVE ANDROID EXOPLAYER PLAYBACK PATH (APK)
+      // =======================================================================
+      if (isNativeAndroid()) {
+        // Ensure HTML5 Audio element is completely stopped and silent
+        const audio = getPersistentAudioElement();
+        if (audio) {
+          pauseAudioSafely(audio);
+          audio.removeAttribute('src');
+        }
+
+        // Offline check for APK:
+        // Phase 2 does not migrate offline playback to native; notify user safely
+        if ((typeof navigator !== 'undefined' && !navigator.onLine) || db.isOfflineTrackSync(targetVid)) {
+          setIsBuffering(false);
+          setPlayingStore(false);
+          toast.info('Mode offline untuk aplikasi Android native akan didukung pada pembaruan mendatang.');
+          return;
+        }
+
+        if (loadedTrackIdRef.current === targetVid) {
+          if (autoPlay) {
+            nativePlay().catch(() => { });
+          }
+          setIsBuffering(false);
+          return;
+        }
+
+        preloadedNextTrackIdRef.current = null;
+        if (autoPlay) {
+          setIsBuffering(true);
+        }
+
+        const state = usePlayerStore.getState();
+        const currentTrack = state.currentTrack;
+        const currentQ = state.queue;
+        const currentIdx = state.queueIndex;
+        const curRepeat = state.repeatMode;
+
+        const posMs = Math.round(resumePosition * 1000);
+
+        // Synchronize master volume to native player
+        const userVol = state.volume ?? 100;
+        const targetVol = isMuted ? 0 : Math.max(0, Math.min(1, userVol / 100));
+        nativeSetVolume(targetVol).catch(() => { });
+
+        const singleTrackData = currentTrack
+          ? convertTrackToNativeTrackData(currentTrack, autoPlay, posMs)
+          : null;
+
+        try {
+          // If queue has multiple items, queue the full playlist into ExoPlayer regardless of repeatMode
+          if (Array.isArray(currentQ) && currentQ.length > 1) {
+            const nativeTracks: NativeTrackData[] = [];
+            let activeTrackNativeIndex = -1;
+
+            currentQ.forEach((t, qIdx) => {
+              const tVid = extractVideoId(t);
+              const data = convertTrackToNativeTrackData(t, autoPlay, 0);
+              if (data && data.uri) {
+                const nIdx = nativeTracks.length;
+                nativeTracks.push(data);
+                if (tVid === targetVid || (activeTrackNativeIndex === -1 && qIdx === currentIdx)) {
+                  activeTrackNativeIndex = nIdx;
+                }
+              }
+            });
+
+            // If target track could not be converted to native track data, DO NOT silently play another track!
+            if (activeTrackNativeIndex === -1) {
+              console.warn('[MusicContext] Active track could not be converted for native playback:', targetVid);
+              setIsBuffering(false);
+              toast.error('Tidak dapat memutar lagu ini secara native');
+              return;
+            }
+
+            if (nativeTracks[activeTrackNativeIndex]) {
+              nativeTracks[activeTrackNativeIndex].positionMs = posMs;
+            }
+
+            const playlistRes = await nativeSetPlaylist({
+              tracks: nativeTracks,
+              startIndex: activeTrackNativeIndex,
+              startPositionMs: posMs,
+              autoPlay,
+            });
+
+            if (!playlistRes || !playlistRes.success) {
+              console.warn('[MusicContext] nativeSetPlaylist failed:', playlistRes);
+              if (loadedTrackIdRef.current === targetVid) {
+                loadedTrackIdRef.current = null;
+              }
+              setIsBuffering(false);
+              setPlayingStore(false);
+              toast.error('Gagal menyiapkan antrean pemutar native');
+              return;
+            }
+          } else {
+            const trackDataToLoad = singleTrackData || {
+              uri: toAbsoluteStreamUrl(useAudioQualityStore.getState().getStreamUrl(targetVid)),
+              mediaId: targetVid,
+              title: 'MusicFY Track',
+              artist: 'MusicFY',
+              autoPlay,
+              positionMs: posMs,
+            };
+            if (!trackDataToLoad.uri) {
+              console.warn('[MusicContext] Track URI is missing:', targetVid);
+              if (loadedTrackIdRef.current === targetVid) {
+                loadedTrackIdRef.current = null;
+              }
+              setIsBuffering(false);
+              setPlayingStore(false);
+              toast.error('URI stream audio tidak ditemukan');
+              return;
+            }
+            const loadRes = await nativeLoadTrack(trackDataToLoad);
+
+            if (!loadRes || !loadRes.success) {
+              console.warn('[MusicContext] nativeLoadTrack failed:', loadRes);
+              if (loadedTrackIdRef.current === targetVid) {
+                loadedTrackIdRef.current = null;
+              }
+              setIsBuffering(false);
+              setPlayingStore(false);
+              toast.error('Gagal memuat lagu pada pemutar native');
+              return;
+            }
+          }
+
+          // SUCCESS: Only update loadedTrackIdRef now that native player successfully accepted the media!
+          loadedTrackIdRef.current = targetVid;
+
+          // Synchronize native ExoPlayer repeat mode
+          nativeSetRepeatMode(curRepeat).catch(() => { });
+        } catch (err: any) {
+          console.error('[MusicContext] Failed to load native track:', err);
+          if (loadedTrackIdRef.current === targetVid) {
+            loadedTrackIdRef.current = null;
+          }
+          setIsBuffering(false);
+          setPlayingStore(false);
+          toast.error('Gagal memuat audio native: ' + (err?.message || 'Kesalahan pemutar'));
+        }
+        return;
+      }
+
+      // =======================================================================
+      // 2. HTML5 AUDIO PLAYBACK PATH (WEB / PWA)
+      // =======================================================================
+      const audio = getPersistentAudioElement();
+      if (!audio) return;
 
       // Guard: if audio element is already loaded with this videoId, don't interrupt or recreate
       const isAudioAlreadyLoaded = Boolean(
@@ -977,7 +1232,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
       if (loadedTrackIdRef.current === targetVid && isAudioAlreadyLoaded) {
         if (autoPlay && audio.paused) {
-          audio.play().catch(() => {});
+          audio.play().catch(() => { });
         }
         setIsBuffering(false);
         return;
@@ -1021,7 +1276,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         audio.load();
 
         // Update LRU access timestamp for offline playback
-        db.recordOfflineTrackPlay(targetVid).catch(() => {});
+        db.recordOfflineTrackPlay(targetVid).catch(() => { });
 
         if (autoPlay) {
           safePlayAudio(audio).then((ok) => {
@@ -1067,7 +1322,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         if (crossfadeSec > 0 && curRepeat !== 'one' && !audio.paused && audio.currentTime > 1) {
           try {
             await safeFadeOut(audio, Math.min(600, crossfadeSec * 300));
-          } catch {}
+          } catch { }
         }
 
         pauseAudioSafely(audio);
@@ -1097,7 +1352,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
             const crossfadeSec = useCrossfadeStore.getState().crossfadeDuration;
             const curRepeat = usePlayerStore.getState().repeatMode;
             if (crossfadeSec > 0 && curRepeat !== 'one') {
-              safeFadeIn(audio, targetVol, Math.min(700, crossfadeSec * 350)).catch(() => {});
+              safeFadeIn(audio, targetVol, Math.min(700, crossfadeSec * 350)).catch(() => { });
             } else {
               audio.volume = targetVol;
             }
@@ -1109,6 +1364,76 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   );
 
   // =========================================================================
+  // Playback Navigation (playNext, playPrev)
+  // =========================================================================
+  const playNext = useCallback(async () => {
+    hasTriggeredCrossfadeRef.current = false;
+    hasUserGestureRef.current = true;
+    playbackInitiatedAtRef.current = Date.now();
+    retryCountPerTrackRef.current.clear();
+    setPlayingStore(true);
+    setIsBuffering(true);
+
+    if (isNativeAndroid()) {
+      await playNextStore();
+      const nextTrack = usePlayerStore.getState().currentTrack;
+      if (nextTrack) {
+        const nextVid = extractVideoId(nextTrack);
+        if (nextVid) {
+          await loadAndPlayTrack(nextVid, true);
+        }
+      }
+      return;
+    }
+
+    initAudioContextKeepAlive();
+    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'playing';
+    }
+    await playNextStore();
+  }, [playNextStore, setPlayingStore, setIsBuffering, initAudioContextKeepAlive, loadAndPlayTrack]);
+
+  useEffect(() => {
+    playNextRef.current = () => {
+      playNext();
+    };
+  }, [playNext]);
+
+  const playPrev = useCallback(() => {
+    hasTriggeredCrossfadeRef.current = false;
+    hasUserGestureRef.current = true;
+    playbackInitiatedAtRef.current = Date.now();
+    retryCountPerTrackRef.current.clear();
+    setPlayingStore(true);
+    setIsBuffering(true);
+
+    if (isNativeAndroid()) {
+      const prog = usePlayerStore.getState().progress;
+      if (prog > 3) {
+        nativeSeekTo(0).catch(() => { });
+        setProgress(0);
+        setIsBuffering(false);
+        return;
+      }
+      playPrevStore();
+      const prevTrack = usePlayerStore.getState().currentTrack;
+      if (prevTrack) {
+        const prevVid = extractVideoId(prevTrack);
+        if (prevVid) {
+          loadAndPlayTrack(prevVid, true);
+        }
+      }
+      return;
+    }
+
+    initAudioContextKeepAlive();
+    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'playing';
+    }
+    playPrevStore();
+  }, [playPrevStore, setPlayingStore, setIsBuffering, initAudioContextKeepAlive, setProgress, loadAndPlayTrack]);
+
+  // =========================================================================
   // Play Track & Queue Actions
   // =========================================================================
   const playTrack = useCallback(
@@ -1117,11 +1442,17 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       hasUserGestureRef.current = true;
       playbackInitiatedAtRef.current = Date.now();
       retryCountPerTrackRef.current.clear();
-      initAudioContextKeepAlive();
 
-      // Request notification permission for Android/mobile notification controls if not yet granted
-      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission().catch(() => {});
+      if (isNativeAndroid()) {
+        checkAndRequestNotificationPermission().catch(() => { });
+      } else {
+        initAudioContextKeepAlive();
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+          Notification.requestPermission().catch(() => { });
+        }
+        if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'playing';
+        }
       }
 
       const targetVideoId = extractVideoId(track);
@@ -1132,9 +1463,6 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
       setPlayingStore(true);
       setIsBuffering(true);
-      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
-        navigator.mediaSession.playbackState = 'playing';
-      }
 
       playTrackStore(track, queue, context, forceIndex);
       await loadAndPlayTrack(targetVideoId, true);
@@ -1147,7 +1475,6 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       hasUserGestureRef.current = true;
       playbackInitiatedAtRef.current = Date.now();
       retryCountPerTrackRef.current.clear();
-      initAudioContextKeepAlive();
       setPlayingStore(true);
       setIsBuffering(true);
 
@@ -1163,7 +1490,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
       playQueueIndexStore(index);
     },
-    [playQueueIndexStore, setPlayingStore, setIsBuffering, initAudioContextKeepAlive, loadAndPlayTrack]
+    [playQueueIndexStore, setPlayingStore, setIsBuffering, loadAndPlayTrack]
   );
 
   // Synchronize track changes (e.g., from playNext, playPrev, or external store triggers)
@@ -1171,13 +1498,15 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!currentVideoId) {
       loadedTrackIdRef.current = null;
-      const audio = getPersistentAudioElement();
-      if (audio && audio.src) {
-        try {
-          audio.pause();
-          audio.removeAttribute('src');
-          audio.load();
-        } catch {}
+      if (!isNativeAndroid()) {
+        const audio = getPersistentAudioElement();
+        if (audio && audio.src) {
+          try {
+            audio.pause();
+            audio.removeAttribute('src');
+            audio.load();
+          } catch { }
+        }
       }
       return;
     }
@@ -1202,8 +1531,6 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   // =========================================================================
   const togglePlay = useCallback(async () => {
     hasUserGestureRef.current = true;
-    initAudioContextKeepAlive();
-    const audio = getPersistentAudioElement();
     const currentStore = usePlayerStore.getState();
     const nextPlaying = !currentStore.isPlaying;
     if (nextPlaying) {
@@ -1211,6 +1538,29 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     }
     setPlayingStore(nextPlaying);
 
+    if (isNativeAndroid()) {
+      if (nextPlaying) {
+        const vid = currentStore.currentTrack ? extractVideoId(currentStore.currentTrack) : '';
+        if (vid && loadedTrackIdRef.current !== vid) {
+          setIsBuffering(true);
+          await loadAndPlayTrack(vid, true);
+          return;
+        }
+        if (pendingResumePositionRef.current !== null && pendingResumePositionRef.current > 0) {
+          const seekPos = pendingResumePositionRef.current;
+          pendingResumePositionRef.current = null;
+          await nativeSeekTo(seekPos);
+          setProgress(seekPos);
+        }
+        await nativePlay();
+      } else {
+        await nativePause();
+      }
+      return;
+    }
+
+    initAudioContextKeepAlive();
+    const audio = getPersistentAudioElement();
     if (audio) {
       if (nextPlaying) {
         const vid = currentStore.currentTrack ? extractVideoId(currentStore.currentTrack) : '';
@@ -1259,9 +1609,26 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       if (playing) {
         hasUserGestureRef.current = true;
         playbackInitiatedAtRef.current = Date.now();
-        initAudioContextKeepAlive();
       }
       setPlayingStore(playing);
+
+      if (isNativeAndroid()) {
+        if (playing) {
+          const currentTrack = usePlayerStore.getState().currentTrack;
+          const vid = currentTrack ? extractVideoId(currentTrack) : '';
+          if (vid && loadedTrackIdRef.current !== vid) {
+            setIsBuffering(true);
+            await loadAndPlayTrack(vid, true);
+            return;
+          }
+          await nativePlay();
+        } else {
+          await nativePause();
+        }
+        return;
+      }
+
+      initAudioContextKeepAlive();
       const audio = getPersistentAudioElement();
 
       if (audio) {
@@ -1306,7 +1673,6 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
   const seekTo = useCallback(
     (time: number) => {
-      const audio = getPersistentAudioElement();
       const dur = usePlayerStore.getState().duration || 0;
       const clamped = Math.max(0, Math.min(dur > 0 ? dur : 9999, time));
 
@@ -1314,6 +1680,16 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       lastProgressRef.current = clamped;
       setProgress(clamped);
 
+      if (isNativeAndroid()) {
+        nativeSeekTo(clamped).catch(() => { });
+        if (seekLockTimerRef.current) clearTimeout(seekLockTimerRef.current);
+        seekLockTimerRef.current = setTimeout(() => {
+          isSeekingLockRef.current = false;
+        }, 400);
+        return;
+      }
+
+      const audio = getPersistentAudioElement();
       if (audio) {
         try {
           audio.currentTime = clamped;
@@ -1322,9 +1698,9 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
             audio.volume = targetVol;
           }
           if (usePlayerStore.getState().isPlaying && audio.paused) {
-            audio.play().catch(() => {});
+            audio.play().catch(() => { });
           }
-        } catch {}
+        } catch { }
       }
 
       updateMediaSessionPosition(clamped, dur);
@@ -1341,6 +1717,14 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     (val: number) => {
       const clamped = Math.max(0, Math.min(100, val));
       setVolumeStore(clamped);
+
+      if (isNativeAndroid()) {
+        if (!isMutedRef.current) {
+          nativeSetVolume(clamped / 100).catch(() => { });
+        }
+        return;
+      }
+
       const audio = getPersistentAudioElement();
       if (audio) {
         audio.volume = clamped / 100;
@@ -1352,6 +1736,13 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const toggleMute = useCallback(() => {
     const next = !isMuted;
     setIsMuted(next);
+
+    if (isNativeAndroid()) {
+      const currentVol = (usePlayerStore.getState().volume ?? 100) / 100;
+      nativeSetVolume(next ? 0 : currentVol).catch(() => { });
+      return;
+    }
+
     const audio = getPersistentAudioElement();
     if (audio) {
       audio.muted = next;
@@ -1360,6 +1751,12 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
   // Synchronize master volume, mute, and repeat loop state whenever settings change
   useEffect(() => {
+    if (isNativeAndroid()) {
+      const targetVol = isMuted ? 0 : Math.max(0, Math.min(1, volume / 100));
+      nativeSetVolume(targetVol).catch(() => { });
+      return;
+    }
+
     const audio = audioRef.current || getPersistentAudioElement();
     if (audio) {
       const targetVol = isMuted ? 0 : Math.max(0, Math.min(1, volume / 100));
@@ -1374,17 +1771,150 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, [volume, isMuted, repeatMode]);
 
   // =========================================================================
+  // Native Android Media3 ExoPlayer Event Subscription Bridge
+  // Active exclusively when running inside Android Capacitor APK (isNativeAndroid() === true)
+  // =========================================================================
+  useEffect(() => {
+    if (!isNativeAndroid()) {
+      return;
+    }
+
+    // Sync initial state and request notification permissions
+    checkAndRequestNotificationPermission().catch(() => { });
+    syncNativePlaybackState().then((state) => {
+      if (state) {
+        setPlayingStore(state.isPlaying);
+        if (state.position > 0) setProgress(state.position);
+        if (state.duration > 0) setDuration(state.duration);
+      }
+    });
+
+    const unsubscribe = subscribeNativeAudioEvents({
+      onPlaybackStateChanged: (state) => {
+        setPlayingStore(state.isPlaying);
+        setIsBuffering(state.state === 'buffering');
+      },
+      onPlaybackProgress: (progress) => {
+        if (!isSeekingLockRef.current) {
+          setProgress(progress.position);
+          if (progress.duration > 0) {
+            setDuration(progress.duration);
+          }
+        }
+      },
+      onDurationChanged: (durationData) => {
+        if (durationData.duration > 0) {
+          setDuration(durationData.duration);
+        }
+      },
+      onTrackChanged: (trackData) => {
+        const state = usePlayerStore.getState();
+        const currentQ = state.queue;
+        const currentIdx = state.queueIndex;
+        const activeTrack = state.currentTrack;
+        const activeVid = activeTrack ? extractVideoId(activeTrack) : '';
+
+        // Guard against duplicate trackChanged events for the same media item (e.g. repeat-one loop or seek)
+        if (trackData.mediaId && activeVid && trackData.mediaId === activeVid) {
+          return;
+        }
+
+        // Validate mediaId: do not guess or use trackData.index as React queue index if mediaId is missing
+        if (!trackData.mediaId) {
+          console.warn('[MusicContext] onTrackChanged received empty mediaId, ignoring event safely');
+          return;
+        }
+
+        // Find the target track index in React queue using valid mediaId mapping
+        let targetIndex = -1;
+        if (Array.isArray(currentQ) && currentQ.length > 0) {
+          targetIndex = currentQ.findIndex((t) => extractVideoId(t) === trackData.mediaId);
+        }
+
+        // Safely handle track not found in React queue without guessing or using trackData.index
+        if (targetIndex === -1) {
+          console.warn('[MusicContext] onTrackChanged: track not found in React queue for mediaId:', trackData.mediaId);
+          return;
+        }
+
+        if (targetIndex >= 0 && targetIndex < currentQ.length) {
+          const nextTrack = currentQ[targetIndex];
+          const nextVid = nextTrack ? extractVideoId(nextTrack) : '';
+
+          if (targetIndex !== currentIdx || (nextVid && nextVid !== activeVid)) {
+            loadedTrackIdRef.current = nextVid;
+
+            const newHistoryItem = { track: nextTrack, playedAt: Date.now() };
+            const filteredHistory = state.history.filter((h) => extractVideoId(h.track) !== nextVid);
+            const newHistory = [newHistoryItem, ...filteredHistory].slice(0, 50);
+
+            const newPlayCounts = { ...state.playCounts };
+            if (nextVid) {
+              newPlayCounts[nextVid] = (newPlayCounts[nextVid] || 0) + 1;
+            }
+
+            usePlayerStore.setState({
+              queueIndex: targetIndex,
+              currentTrack: nextTrack,
+              isPlaying: true,
+              progress: 0,
+              history: newHistory,
+              playCounts: newPlayCounts,
+            });
+          }
+        }
+      },
+      onPlaybackEnded: (event) => {
+        setIsBuffering(false);
+        const curRepeat = usePlayerStore.getState().repeatMode;
+
+        // If native repeat mode is active ('one' or 'all'), ExoPlayer manages loop natively.
+        // Avoid manual seekTo(0) + play() that collides with native repeat!
+        if (curRepeat === 'one' || curRepeat === 'all') {
+          return;
+        }
+
+        // Repeat mode is 'off': playlist has naturally reached the end
+        const state = usePlayerStore.getState();
+        if (state.playContext === 'similar' && state.currentTrack) {
+          playNext();
+        } else {
+          setPlayingStore(false);
+        }
+      },
+      onRepeatModeChanged: (event) => {
+        const curRepeat = usePlayerStore.getState().repeatMode;
+        if (event.mode && (event.mode === 'off' || event.mode === 'one' || event.mode === 'all')) {
+          if (event.mode !== curRepeat) {
+            usePlayerStore.setState({ repeatMode: event.mode });
+          }
+        }
+      },
+      onPlaybackError: (error) => {
+        console.error('[NativeAudioBridge] Native playback error:', error);
+        setIsBuffering(false);
+        setPlayingStore(false);
+        toast.error('Gagal memutar audio native: ' + (error.message || 'Kesalahan jaringan'));
+      },
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [setPlayingStore, setIsBuffering, setProgress, setDuration, playNext]);
+
+  // =========================================================================
   // Media Session API (Mobile Background & Lockscreen Notification Controls)
   // Fully configured for continuous background control across PC and Mobile
   // =========================================================================
   const mediaActionsRef = useRef({
-    play: () => {},
-    pause: () => {},
-    next: () => {},
-    prev: () => {},
-    seekTo: (time: number) => {},
-    toggleShuffle: () => {},
-    toggleRepeat: () => {},
+    play: () => { },
+    pause: () => { },
+    next: () => { },
+    prev: () => { },
+    seekTo: (time: number) => { },
+    toggleShuffle: () => { },
+    toggleRepeat: () => { },
   });
 
   useEffect(() => {
@@ -1450,7 +1980,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    if (isNativeAndroid() || typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
 
     const ms = navigator.mediaSession;
 
@@ -1486,7 +2016,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         resumeAudioContextSafely();
         const audio = getPersistentAudioElement();
         if (audio && audio.paused && audio.src) {
-          safePlayAudio(audio).catch(() => {});
+          safePlayAudio(audio).catch(() => { });
         }
         mediaActionsRef.current.play();
         if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
@@ -1624,7 +2154,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           try {
             navigator.mediaSession.playbackState = 'none';
             navigator.mediaSession.metadata = null;
-          } catch {}
+          } catch { }
         }
         terminateBackgroundAudio();
       }
@@ -1648,7 +2178,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           // App state change to inactive must never interrupt actively running playback.
           if (usePlayerStore.getState().isPlaying) {
             startBackgroundAudio();
-            if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+            if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
               navigator.mediaSession.playbackState = 'playing';
             }
           }
@@ -1660,25 +2190,28 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           // Background audio playback must continue running smoothly.
           if (usePlayerStore.getState().isPlaying) {
             startBackgroundAudio();
-            if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+            if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
               navigator.mediaSession.playbackState = 'playing';
             }
           }
         });
 
-        // 3. Back Button: When exiting root on Android, dismiss notification only if paused
+        // 3. Back Button: When exiting root on Android, dismiss notification only if paused on Web/PWA
+        // Native Android APK ExoPlayer retains paused playback in MusicMediaSessionService
         backSub = await App.addListener('backButton', ({ canGoBack }) => {
           if (!canGoBack && !usePlayerStore.getState().isPlaying) {
-            if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+            if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
               try {
                 navigator.mediaSession.playbackState = 'none';
                 navigator.mediaSession.metadata = null;
-              } catch {}
+              } catch { }
             }
-            terminateBackgroundAudio();
+            if (!isNativeAndroid()) {
+              terminateBackgroundAudio();
+            }
           }
         });
-      } catch {}
+      } catch { }
     };
 
     setupAppListener();
@@ -1686,14 +2219,17 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     const handleWindowUnload = () => {
       // CRITICAL: On mobile browsers/PWA, pagehide/unload can be triggered when user switches to a game!
       // Only tear down if the user is explicitly NOT playing anything.
+      // Native Android APK ExoPlayer retains paused playback in MusicMediaSessionService.
       if (!usePlayerStore.getState().isPlaying) {
-        if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
           try {
             navigator.mediaSession.playbackState = 'none';
             navigator.mediaSession.metadata = null;
-          } catch {}
+          } catch { }
         }
-        terminateBackgroundAudio();
+        if (!isNativeAndroid()) {
+          terminateBackgroundAudio();
+        }
       }
     };
 
@@ -1716,13 +2252,15 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   // Sync MediaMetadata with Current Track and Playback Status (Web & Android APK)
   useEffect(() => {
     if (!currentTrack) {
-      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
         try {
           navigator.mediaSession.metadata = null;
           navigator.mediaSession.playbackState = 'none';
-        } catch {}
+        } catch { }
       }
-      terminateBackgroundAudio();
+      if (!isNativeAndroid()) {
+        terminateBackgroundAudio();
+      }
       return;
     }
 
@@ -1742,7 +2280,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     const posMs = Math.round((usePlayerStore.getState().progress || 0) * 1000);
 
     // 1. Standard Web MediaSession API (for Chrome / mobile browser & desktop)
-    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+    if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
       if (typeof window !== 'undefined' && 'MediaMetadata' in window) {
         try {
           const artType = absoluteArtwork.startsWith('data:image/png') || absoluteArtwork.endsWith('.png') ? 'image/png' : 'image/jpeg';
@@ -1771,11 +2309,11 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
       try {
         navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
-      } catch {}
+      } catch { }
     }
 
-    // 2. Native Android MediaSession Bridge (for Capacitor APK Status Bar & Lockscreen Controls)
-    if (typeof window !== 'undefined' && window.AndroidMediaBridge) {
+    // 2. Native Android MediaSession Bridge (Legacy fallback only, skipped in ExoPlayer APK)
+    if (typeof window !== 'undefined' && window.AndroidMediaBridge && !isNativeAndroid()) {
       try {
         const colorHex = dominantColor || '#1DB954';
         if (typeof (window.AndroidMediaBridge as any).updateMetadataWithColor === 'function') {
@@ -1801,7 +2339,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     }
 
     const audio = getPersistentAudioElement();
-    if (audio) {
+    if (audio && !isNativeAndroid()) {
       audio.title = `${trackTitle} • ${artist}`;
       if (currentTrack.duration && isFinite(currentTrack.duration) && currentTrack.duration > 0) {
         updateMediaSessionPosition(audio.currentTime || 0, currentTrack.duration);
@@ -1809,19 +2347,19 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     }
   }, [currentTrack, isPlaying, dominantColor, updateMediaSessionPosition]);
 
-  // Sync MediaSession playbackState with Store isPlaying (Web & Android APK)
+  // Sync MediaSession playbackState with Store isPlaying (Web/PWA only)
   useEffect(() => {
-    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+    if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
       navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
     }
-    if (typeof window !== 'undefined' && window.AndroidMediaBridge) {
+    if (typeof window !== 'undefined' && window.AndroidMediaBridge && !isNativeAndroid()) {
       try {
         const curDur = Math.round((usePlayerStore.getState().duration || 0) * 1000);
         const curPos = Math.round((usePlayerStore.getState().progress || 0) * 1000);
         window.AndroidMediaBridge.updatePlaybackState(isPlaying ? 'playing' : 'paused', curPos, curDur);
-      } catch {}
+      } catch { }
     }
-  }, [isPlaying]);  useEffect(() => {
+  }, [isPlaying]); useEffect(() => {
     if (typeof document === 'undefined') return;
     if (!currentTrack) {
       document.title = 'MusicFY - Pemutar Musik';
@@ -1865,7 +2403,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       if (typeof navigator !== 'undefined' && 'wakeLock' in navigator && isPlaying) {
         try {
           wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-        } catch {}
+        } catch { }
       }
     };
 
@@ -1881,7 +2419,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         if (usePlayerStore.getState().isPlaying) {
           requestLock();
           startBackgroundAudio();
-          if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+          if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
             navigator.mediaSession.playbackState = 'playing';
           }
         }
@@ -1891,16 +2429,16 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         // Reinforce Foreground Service, Audio Focus, and MediaSession state!
         if (usePlayerStore.getState().isPlaying) {
           startBackgroundAudio();
-          if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+          if (!isNativeAndroid() && typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
             navigator.mediaSession.playbackState = 'playing';
           }
-          if (typeof window !== 'undefined' && window.AndroidMediaBridge) {
+          if (typeof window !== 'undefined' && window.AndroidMediaBridge && !isNativeAndroid()) {
             try {
               const audio = getPersistentAudioElement();
               const posMs = Math.round((audio?.currentTime || usePlayerStore.getState().progress || 0) * 1000);
               const durMs = Math.round((audio?.duration || usePlayerStore.getState().duration || 0) * 1000);
               window.AndroidMediaBridge.updatePlaybackState('playing', posMs, durMs);
-            } catch {}
+            } catch { }
           }
         }
       }
@@ -1911,7 +2449,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (wakeLockRef.current) {
-        wakeLockRef.current.release().catch(() => {});
+        wakeLockRef.current.release().catch(() => { });
         wakeLockRef.current = null;
       }
     };
@@ -1932,7 +2470,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           setLikedSongs(parsed);
         }
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const likedIdsRef = useRef<Set<string>>(new Set());
@@ -1954,11 +2492,11 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           const merged = Array.from(map.values());
           try {
             debouncedLocalStorageSet(LIKED_STORAGE_KEY, JSON.stringify(merged));
-          } catch {}
+          } catch { }
           return merged;
         });
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       mounted = false;
@@ -1985,15 +2523,15 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         }
         try {
           debouncedLocalStorageSet(LIKED_STORAGE_KEY, JSON.stringify(next));
-        } catch {}
+        } catch { }
         return next;
       });
 
       if (alreadyLiked) {
-        db.removeLikedSong(track.videoId).catch(() => {});
+        db.removeLikedSong(track.videoId).catch(() => { });
         toast.info('Dihapus dari Lagu yang Disukai');
       } else {
-        db.addLikedSong(track).catch(() => {});
+        db.addLikedSong(track).catch(() => { });
         toast.success('Disimpan ke Lagu yang Disukai');
       }
 

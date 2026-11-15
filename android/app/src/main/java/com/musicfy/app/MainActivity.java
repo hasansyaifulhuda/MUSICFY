@@ -16,11 +16,11 @@ import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
     private static final int NOTIFICATION_PERMISSION_REQUEST_CODE = 1001;
-    private MediaSessionBridge mediaBridge;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(MusicBackgroundPlugin.class);
+        registerPlugin(NativeAudioPlayerPlugin.class);
         super.onCreate(savedInstanceState);
 
         // Request runtime permission for Android 13+ (Tiramisu / API 33+) to allow media notifications
@@ -66,12 +66,6 @@ public class MainActivity extends BridgeActivity {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
                 }
-
-                // 4. Initialize native Android MediaSession & Status bar / Lockscreen Notification bridge
-                if (mediaBridge == null) {
-                    mediaBridge = new MediaSessionBridge(this, webView);
-                    webView.addJavascriptInterface(mediaBridge, "AndroidMediaBridge");
-                }
             }
         } catch (Exception ignored) {}
     }
@@ -113,19 +107,11 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onDestroy() {
-        if (mediaBridge != null) {
-            mediaBridge.destroy();
-            mediaBridge = null;
-        }
         try {
-            Intent sIntent = new Intent(this, AudioForegroundService.class);
-            sIntent.setAction(AudioForegroundService.ACTION_STOP);
-            startService(sIntent);
-            stopService(sIntent);
-
-            android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null) {
-                nm.cancel(AudioForegroundService.NOTIFICATION_ID);
+            if (AudioForegroundService.getInstance() != null) {
+                Intent sIntent = new Intent(this, AudioForegroundService.class);
+                sIntent.setAction(AudioForegroundService.ACTION_STOP);
+                stopService(sIntent);
             }
         } catch (Exception ignored) {}
         super.onDestroy();

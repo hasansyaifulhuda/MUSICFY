@@ -63,6 +63,22 @@ public class AudioForegroundService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            // Android 8.0+ strict requirement: if invoked via startForegroundService,
+            // must satisfy startForeground requirement before stopSelf() to prevent ForegroundServiceDidNotStartInTimeException
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Notification notif = MediaSessionBridge.getLastNotification();
+                    if (notif == null) {
+                        notif = buildDefaultNotification();
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+                    } else {
+                        startForeground(NOTIFICATION_ID, notif);
+                    }
+                }
+            } catch (Exception ignored) {}
+            releaseServiceWakeLock();
             stopForegroundCompat(true);
             stopSelf();
             return START_NOT_STICKY;

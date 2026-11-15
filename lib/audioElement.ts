@@ -1,4 +1,5 @@
 import { db } from './db';
+import { isNativeAndroid } from './nativeAudioBridge';
 
 /**
  * Enterprise Singleton HTML5 Audio Engine & Immediate Playback Controller
@@ -82,6 +83,11 @@ export function getPersistentAudioElement(): HTMLAudioElement | null {
  * Intercepts and suppresses benign browser AbortError and NotAllowedError.
  */
 export async function safePlayAudio(audio: HTMLAudioElement): Promise<boolean> {
+  // APK GUARD: In Android APK, HTML5 audio MUST NEVER play! Media3 ExoPlayer is the exclusive playback engine.
+  if (isNativeAndroid()) {
+    return false;
+  }
+
   try {
     // If a play promise is already in flight, wait or reuse
     if (window.__MUSICFY_AUDIO_PLAY_PROMISE__) {
@@ -255,6 +261,13 @@ export function playTrackImmediately(
   targetVolume?: number
 ): void {
   if (typeof window === 'undefined' || !targetVid) return;
+
+  // APK GUARD: In Android APK, HTML5 audio MUST NOT be triggered!
+  // Media3 ExoPlayer via nativeAudioBridge in MusicContext is the sole audio engine.
+  if (isNativeAndroid()) {
+    return;
+  }
+
   try {
     const audio = getPersistentAudioElement();
     if (!audio) return;
